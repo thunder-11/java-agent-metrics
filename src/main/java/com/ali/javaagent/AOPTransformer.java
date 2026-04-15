@@ -31,7 +31,7 @@ public class AOPTransformer implements ClassFileTransformer {
     /** Prefixes that must never be instrumented. */
     private static final Set<String> EXCLUDED_PREFIXES = new HashSet<>(Arrays.asList(
             "java/", "javax/", "sun/", "com/sun/", "jdk/",
-            "javassist/", "com/lzy/javaagent/metrics/", "com/lzy/javaagent/ui/"
+            "javassist/", "com/ali/javaagent/metrics/", "com/ali/javaagent/ui/"
     ));
 
     public AOPTransformer(String targetClassName) {
