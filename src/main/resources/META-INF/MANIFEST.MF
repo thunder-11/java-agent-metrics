@@ -1,5 +1,5 @@
 Manifest-Version: 1.0
-Premain-Class: com.lzy.javaagent.AgentMain
-Agent-Class: com.lzy.javaagent.AgentMain
+Premain-Class: com.ali.javaagent.AgentMain
+Agent-Class: com.ali.javaagent.AgentMain
 Can-Redefine-Classes: true
 Can-Retransform-Classes: true

@@ -1,4 +1,4 @@
-package com.lzy.javaagent;
+package com.ali.javaagent;
 
 import java.io.ByteArrayInputStream;
 import java.lang.instrument.ClassFileTransformer;
@@ -19,7 +19,7 @@ import javassist.LoaderClassPath;
  * For the configured target class, the original console logging is preserved.
  * For <b>all</b> loaded application classes (excluding JDK internals and the
  * agent's own packages), timing instrumentation is injected so
- * {@link com.lzy.javaagent.metrics.MetricsRegistry} receives live data.
+ * {@link com.ali.javaagent.metrics.MetricsRegistry} receives live data.
  *
  * @author Ali
  */
@@ -116,7 +116,7 @@ public class AOPTransformer implements ClassFileTransformer {
                 
                 body.append("  } finally {\n");
                 body.append("    long $__dur = System.nanoTime() - $__start;\n");
-                body.append("    com.lzy.javaagent.metrics.MetricsRegistry.getInstance().updateMetric(\"")
+                body.append("    com.ali.javaagent.metrics.MetricsRegistry.getInstance().updateMetric(\"")
                     .append(methodKey).append("\", $__dur);\n");
                 body.append("  }\n");
                 body.append("}\n");

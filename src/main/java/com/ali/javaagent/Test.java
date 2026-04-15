@@ -1,12 +1,12 @@
-package com.lzy.javaagent;
+package com.ali.javaagent;
 
 /**
  * Demo application to exercise the Java Agent.
  * Run with:
  * <pre>
- * java -javaagent:target/javaagent-1.0-SNAPSHOT-jar-with-dependencies.jar=com.lzy.javaagent.Test \
+ * java -javaagent:target/javaagent-1.0-SNAPSHOT-jar-with-dependencies.jar=com.ali.javaagent.Test \
  *      -cp target/javaagent-1.0-SNAPSHOT-jar-with-dependencies.jar \
- *      com.lzy.javaagent.Test
+ *      com.ali.javaagent.Test
  * </pre>
  *
  * @author Ali

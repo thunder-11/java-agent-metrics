@@ -1,7 +1,7 @@
-package com.lzy.javaagent.ui;
+package com.ali.javaagent.ui;
 
-import com.lzy.javaagent.metrics.MethodMetrics;
-import com.lzy.javaagent.metrics.MetricsRegistry;
+import com.ali.javaagent.metrics.MethodMetrics;
+import com.ali.javaagent.metrics.MetricsRegistry;
 
 import javax.swing.*;
 import javax.swing.table.AbstractTableModel;
