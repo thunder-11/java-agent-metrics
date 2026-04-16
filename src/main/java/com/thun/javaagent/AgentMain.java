@@ -51,9 +51,9 @@ public class AgentMain {
         config.parse(agentOps);
         System.out.println("[javaagent] config: " + config);
 
-        // 2. Load persisted metrics
+        // 2. Clear persisted metrics from previous runs
         MetricsPersistence persistence = new MetricsPersistence();
-        persistence.loadExisting();
+        persistence.clearExisting();
 
         // 3. Register bytecode transformer
         String target = config.getTargetPackage();

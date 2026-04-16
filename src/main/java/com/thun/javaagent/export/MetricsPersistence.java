@@ -18,11 +18,15 @@ public final class MetricsPersistence {
     private volatile boolean running;
 
     /**
-     * Attempts to load previously persisted metrics from disk.
+     * Clears previously persisted metrics from disk to ensure a fresh start.
      */
-    public void loadExisting() {
+    public void clearExisting() {
         String path = AgentConfig.getInstance().getMetricsExportPath();
-        MetricsRegistry.getInstance().loadFromFile(path);
+        java.io.File f = new java.io.File(path);
+        if (f.exists()) {
+            f.delete();
+            System.out.println("[agent-persist] cleared previous metrics from " + path);
+        }
     }
 
     /**

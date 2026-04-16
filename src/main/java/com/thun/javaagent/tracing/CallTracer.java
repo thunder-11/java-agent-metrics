@@ -70,10 +70,11 @@ public final class CallTracer {
         CallNode node = stack.pop();
         node.setDurationNanos(durationNanos);
 
-        // If the stack is now empty, this was a root invocation → store
-        if (stack.isEmpty()) {
+        // Store if root invocation OR if it took longer than slow threshold
+        // This is crucial for long-running threads where stack never fully empties
+        long thresholdNanos = com.thun.javaagent.agent.AgentConfig.getInstance().getSlowThresholdMs() * 1_000_000L;
+        if (stack.isEmpty() || durationNanos >= thresholdNanos) {
             recentTraces.addFirst(node);
-            // Evict oldest if over capacity
             while (recentTraces.size() > MAX_RECENT_TRACES) {
                 recentTraces.pollLast();
             }

@@ -10,809 +10,1252 @@ import javax.swing.*;
 import javax.swing.border.*;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
+import javax.swing.filechooser.FileNameExtensionFilter;
+import javax.swing.plaf.basic.BasicTabbedPaneUI;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.JTableHeader;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeCellRenderer;
 import javax.swing.tree.DefaultTreeModel;
 import java.awt.*;
 import java.awt.event.*;
+import java.awt.geom.RoundRectangle2D;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.util.*;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.prefs.Preferences;
 
 /**
- * Premium dark-themed APM dashboard with tabbed interface.
+ * Production-grade APM dashboard with light/dark theme toggle.
+ * <p>
+ * Design system: custom-painted rounded components, 8px spacing grid,
+ * dual colour palettes, gradient accents, smooth hover transitions.
  * <p>
  * Tabs:
  * <ol>
- *   <li><b>All Methods</b> — full metrics table with search, filtering, color-coded rows</li>
- *   <li><b>Slow Methods</b> — methods exceeding threshold, sorted by avg time</li>
- *   <li><b>Call Traces</b> — JTree of recent call trees</li>
- *   <li><b>Configuration</b> — live agent config controls</li>
+ *   <li><b>All Methods</b> — full metrics table with search, column sorting, color-coded status</li>
+ *   <li><b>Slow Methods</b> — methods exceeding the configurable slow threshold</li>
+ *   <li><b>Errors</b> — methods that have thrown exceptions, with last exception type</li>
+ *   <li><b>Call Traces</b> — JTree visualisation of recent parent→child call trees</li>
+ *   <li><b>Configuration</b> — runtime agent config controls (enable/disable, threshold)</li>
  * </ol>
+ * <p>
+ * Features: live JVM heap bar, CSV export, reset with confirmation, light/dark toggle,
+ * theme persistence via Java Preferences API.
  *
  * @author Ali
  */
 public class MetricsDashboard {
 
-    // ─────────────────────────────────────────────── Color Palette (Dark Theme)
-    private static final Color BG_DARK       = new Color(24, 24, 32);
-    private static final Color BG_PANEL      = new Color(32, 33, 44);
-    private static final Color BG_CARD       = new Color(40, 42, 56);
-    private static final Color BG_TABLE      = new Color(36, 38, 50);
-    private static final Color BG_TABLE_ALT  = new Color(42, 44, 58);
-    private static final Color BG_HEADER     = new Color(50, 52, 68);
-    private static final Color BG_INPUT      = new Color(48, 50, 66);
+    // ═══════════════════════════════════════════════════════════════════
+    //  THEME STATE
+    // ═══════════════════════════════════════════════════════════════════
 
-    private static final Color FG_PRIMARY    = new Color(230, 232, 240);
-    private static final Color FG_SECONDARY  = new Color(160, 165, 185);
-    private static final Color FG_ACCENT     = new Color(100, 180, 255);
-    private static final Color FG_HEADER     = new Color(180, 185, 200);
+    private static boolean isDarkTheme;
+    private static JFrame mainFrame;
+    private static javax.swing.Timer refreshTimer;
 
-    private static final Color SLOW_BG       = new Color(80, 30, 35);
-    private static final Color SLOW_FG       = new Color(255, 100, 100);
-    private static final Color WARN_BG       = new Color(70, 55, 25);
-    private static final Color WARN_FG       = new Color(255, 200, 80);
-    private static final Color OK_FG         = new Color(80, 210, 130);
-    private static final Color ERROR_FG      = new Color(255, 85, 85);
+    /** Preference key for persisting theme choice. */
+    private static final String PREF_DARK_THEME = "darkTheme";
 
-    private static final Color ACCENT_BLUE   = new Color(80, 140, 255);
-    private static final Color ACCENT_PURPLE = new Color(155, 100, 255);
-    private static final Color ACCENT_CYAN   = new Color(60, 210, 210);
+    // ═══════════════════════════════════════════════════════════════════
+    //  DESIGN SYSTEM — Mutable Colour Tokens (swapped on theme toggle)
+    // ═══════════════════════════════════════════════════════════════════
 
-    private static final Font FONT_MONO      = new Font("JetBrains Mono", Font.PLAIN, 12);
-    private static final Font FONT_MONO_FALLBACK = new Font("Consolas", Font.PLAIN, 12);
-    private static final Font FONT_UI        = new Font("Segoe UI", Font.PLAIN, 13);
-    private static final Font FONT_UI_BOLD   = new Font("Segoe UI", Font.BOLD, 13);
-    private static final Font FONT_TITLE     = new Font("Segoe UI", Font.BOLD, 18);
-    private static final Font FONT_STAT       = new Font("Segoe UI", Font.BOLD, 24);
-    private static final Font FONT_STAT_LABEL = new Font("Segoe UI", Font.PLAIN, 11);
+    // Surface layers
+    private static Color SURFACE_0;    // window background
+    private static Color SURFACE_1;    // panels / header
+    private static Color SURFACE_2;    // cards / tables
+    private static Color SURFACE_3;    // elevated cards / inputs
+    private static Color SURFACE_4;    // hover / alt rows
 
-    private static Font monoFont() {
-        GraphicsEnvironment ge = GraphicsEnvironment.getLocalGraphicsEnvironment();
-        for (String name : ge.getAvailableFontFamilyNames()) {
-            if (name.equals("JetBrains Mono")) return FONT_MONO;
-        }
-        return FONT_MONO_FALLBACK;
+    // Borders
+    private static Color BORDER_0;     // subtle separator
+    private static Color BORDER_1;     // input / card border
+    private static Color BORDER_2;     // focus ring
+
+    // Text
+    private static Color TEXT_PRIMARY;
+    private static Color TEXT_SECONDARY;
+    private static Color TEXT_TERTIARY;
+    private static Color TEXT_LINK;
+
+    // Semantic status
+    private static Color GREEN;
+    private static Color YELLOW;
+    private static Color ORANGE;
+    private static Color RED;
+
+    // Accent
+    private static Color BLUE;
+    private static Color PURPLE;
+    private static Color CYAN;
+
+    // Row tint backgrounds (very subtle)
+    private static Color ROW_GREEN_BG;
+    private static Color ROW_YELLOW_BG;
+    private static Color ROW_RED_BG;
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  PALETTE DEFINITIONS
+    // ═══════════════════════════════════════════════════════════════════
+
+    private static void applyDarkPalette() {
+        SURFACE_0    = new Color(12, 13, 18);
+        SURFACE_1    = new Color(18, 20, 28);
+        SURFACE_2    = new Color(24, 26, 36);
+        SURFACE_3    = new Color(32, 35, 48);
+        SURFACE_4    = new Color(40, 44, 58);
+
+        BORDER_0     = new Color(38, 41, 56);
+        BORDER_1     = new Color(52, 56, 74);
+        BORDER_2     = new Color(65, 70, 92);
+
+        TEXT_PRIMARY   = new Color(230, 232, 242);
+        TEXT_SECONDARY = new Color(145, 150, 175);
+        TEXT_TERTIARY  = new Color(100, 105, 130);
+        TEXT_LINK      = new Color(105, 165, 255);
+
+        GREEN   = new Color(62, 207, 142);
+        YELLOW  = new Color(250, 195, 65);
+        ORANGE  = new Color(240, 150, 55);
+        RED     = new Color(245, 78, 78);
+
+        BLUE    = new Color(75, 140, 255);
+        PURPLE  = new Color(148, 100, 255);
+        CYAN    = new Color(55, 205, 210);
+
+        ROW_GREEN_BG  = new Color(20, 45, 35);
+        ROW_YELLOW_BG = new Color(42, 38, 18);
+        ROW_RED_BG    = new Color(48, 18, 22);
     }
 
-    // ─────────────────────────────────────────────── Column Defs
+    private static void applyLightPalette() {
+        SURFACE_0    = new Color(244, 245, 250);
+        SURFACE_1    = new Color(234, 236, 244);
+        SURFACE_2    = new Color(255, 255, 255);
+        SURFACE_3    = new Color(240, 242, 248);
+        SURFACE_4    = new Color(232, 234, 242);
+
+        BORDER_0     = new Color(214, 218, 230);
+        BORDER_1     = new Color(196, 200, 216);
+        BORDER_2     = new Color(175, 180, 200);
+
+        TEXT_PRIMARY   = new Color(26, 28, 40);
+        TEXT_SECONDARY = new Color(90, 95, 115);
+        TEXT_TERTIARY  = new Color(135, 140, 162);
+        TEXT_LINK      = new Color(42, 105, 218);
+
+        GREEN   = new Color(22, 163, 90);
+        YELLOW  = new Color(200, 145, 10);
+        ORANGE  = new Color(205, 115, 10);
+        RED     = new Color(220, 52, 52);
+
+        BLUE    = new Color(42, 105, 218);
+        PURPLE  = new Color(110, 60, 220);
+        CYAN    = new Color(8, 140, 162);
+
+        ROW_GREEN_BG  = new Color(228, 248, 238);
+        ROW_YELLOW_BG = new Color(253, 245, 222);
+        ROW_RED_BG    = new Color(252, 228, 232);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  DESIGN SYSTEM — Typography (immutable)
+    // ═══════════════════════════════════════════════════════════════════
+
+    private static final Font FONT_MONO;
+    private static final Font FONT_MONO_SM;
+    private static final Font FONT_BODY;
+    private static final Font FONT_BODY_BOLD;
+    private static final Font FONT_CAPTION;
+    private static final Font FONT_CAPTION_BOLD;
+    private static final Font FONT_H1;
+    private static final Font FONT_H2;
+    private static final Font FONT_H3;
+    private static final Font FONT_STAT_VALUE;
+    private static final Font FONT_STAT_LABEL;
+
+    static {
+        // ── Fonts ──
+        String mono = "Consolas";
+        for (String f : GraphicsEnvironment.getLocalGraphicsEnvironment().getAvailableFontFamilyNames()) {
+            if (f.equals("JetBrains Mono")) { mono = f; break; }
+        }
+        FONT_MONO        = new Font(mono, Font.PLAIN, 12);
+        FONT_MONO_SM     = new Font(mono, Font.PLAIN, 11);
+        FONT_BODY        = new Font("Segoe UI", Font.PLAIN, 13);
+        FONT_BODY_BOLD   = new Font("Segoe UI", Font.BOLD, 13);
+        FONT_CAPTION     = new Font("Segoe UI", Font.PLAIN, 11);
+        FONT_CAPTION_BOLD= new Font("Segoe UI", Font.BOLD, 11);
+        FONT_H1          = new Font("Segoe UI", Font.BOLD, 22);
+        FONT_H2          = new Font("Segoe UI", Font.BOLD, 16);
+        FONT_H3          = new Font("Segoe UI", Font.BOLD, 14);
+        FONT_STAT_VALUE  = new Font("Segoe UI", Font.BOLD, 28);
+        FONT_STAT_LABEL  = new Font("Segoe UI", Font.PLAIN, 10);
+
+        // ── Theme: load persisted preference, default to dark ──
+        isDarkTheme = Preferences.userNodeForPackage(MetricsDashboard.class)
+                .getBoolean(PREF_DARK_THEME, true);
+        if (isDarkTheme) applyDarkPalette(); else applyLightPalette();
+    }
+
+    // Spacing constants (8px grid)
+    private static final int SP_XS = 4;
+    private static final int SP_SM = 8;
+    private static final int SP_MD = 12;
+    private static final int SP_LG = 16;
+    private static final int SP_XL = 24;
+    private static final int SP_2XL= 32;
+
+    // Border radius
+    private static final int RADIUS_SM = 6;
+    private static final int RADIUS_MD = 10;
+    private static final int RADIUS_LG = 14;
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  REUSABLE UI PRIMITIVES
+    // ═══════════════════════════════════════════════════════════════════
+
+    /** A panel with a rounded-rectangle fill and optional border. */
+    private static JPanel roundedPanel(Color bg, Color borderColor, int radius) {
+        JPanel p = new JPanel() {
+            @Override protected void paintComponent(Graphics g) {
+                Graphics2D g2 = gfx(g);
+                g2.setColor(bg);
+                g2.fill(new RoundRectangle2D.Float(0, 0, getWidth(), getHeight(), radius, radius));
+                if (borderColor != null) {
+                    g2.setColor(borderColor);
+                    g2.draw(new RoundRectangle2D.Float(0.5f, 0.5f, getWidth()-1, getHeight()-1, radius, radius));
+                }
+                g2.dispose();
+            }
+        };
+        p.setOpaque(false);
+        return p;
+    }
+
+    /** Styled button with rounded bg, hover effect, and accent colour. */
+    private static JButton styledButton(String text, Color accent) {
+        JButton btn = new JButton(text) {
+            boolean hovered = false;
+            {
+                setOpaque(false);
+                setContentAreaFilled(false);
+                setFocusPainted(false);
+                setBorderPainted(false);
+                setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+                setFont(FONT_BODY_BOLD);
+                setForeground(accent);
+                addMouseListener(new MouseAdapter() {
+                    @Override public void mouseEntered(MouseEvent e) { hovered = true; repaint(); }
+                    @Override public void mouseExited(MouseEvent e)  { hovered = false; repaint(); }
+                });
+            }
+            @Override protected void paintComponent(Graphics g) {
+                Graphics2D g2 = gfx(g);
+                Color bg = hovered ? new Color(accent.getRed(), accent.getGreen(), accent.getBlue(), 30)
+                                   : SURFACE_3;
+                Color border = hovered ? accent : BORDER_1;
+                g2.setColor(bg);
+                g2.fill(new RoundRectangle2D.Float(0, 0, getWidth(), getHeight(), RADIUS_SM, RADIUS_SM));
+                g2.setColor(border);
+                g2.draw(new RoundRectangle2D.Float(0.5f, 0.5f, getWidth()-1, getHeight()-1, RADIUS_SM, RADIUS_SM));
+                g2.dispose();
+                setForeground(hovered ? (isDarkTheme ? Color.WHITE : accent.darker()) : accent);
+                super.paintComponent(g);
+            }
+        };
+        btn.setBorder(BorderFactory.createEmptyBorder(SP_SM, SP_LG, SP_SM, SP_LG));
+        return btn;
+    }
+
+    /** Consistent Graphics2D setup with antialiasing. */
+    private static Graphics2D gfx(Graphics g) {
+        Graphics2D g2 = (Graphics2D) g.create();
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_LCD_HRGB);
+        return g2;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  COLUMN DEFINITIONS
+    // ═══════════════════════════════════════════════════════════════════
+
     private static final String[] ALL_COLUMNS = {
-            "Method", "Calls", "Total (ms)", "Avg (ms)", "Min (ms)", "Max (ms)", "Errors", "Err%"
+            "Status", "Method", "Calls", "Total (ms)", "Avg (ms)", "Min (ms)", "Max (ms)", "Errors", "Err%"
     };
-
     private static final String[] SLOW_COLUMNS = {
-            "Method", "Calls", "Avg (ms)", "Max (ms)", "Errors"
+            "Status", "Method", "Calls", "Avg (ms)", "Max (ms)", "Errors"
+    };
+    private static final String[] ERROR_COLUMNS = {
+            "Method", "Errors", "Calls", "Err%", "Last Exception"
     };
 
-    // ─────────────────────────────────────────────── Table Model
+    // ═══════════════════════════════════════════════════════════════════
+    //  TABLE MODEL
+    // ═══════════════════════════════════════════════════════════════════
+
     private static final class MetricsTableModel extends AbstractTableModel {
         private final String[] columns;
-        private final boolean slowOnly;
+        private final int mode; // 0 = all, 1 = slow, 2 = errors
         private List<Object[]> rows = new ArrayList<>();
         private String filter = "";
 
-        MetricsTableModel(String[] columns, boolean slowOnly) {
-            this.columns = columns;
-            this.slowOnly = slowOnly;
-        }
-
-        void setFilter(String f) {
-            this.filter = f.toLowerCase();
-        }
+        MetricsTableModel(String[] cols, int mode) { this.columns = cols; this.mode = mode; }
+        void setFilter(String f) { this.filter = f.toLowerCase(); }
 
         void refreshData() {
-            Map<String, MethodMetrics> snapshot = MetricsRegistry.getInstance().getMetricsSnapshot();
+            Map<String, MethodMetrics> snap = MetricsRegistry.getInstance().getMetricsSnapshot();
             long threshold = AgentConfig.getInstance().getSlowThresholdMs();
-            List<Object[]> newRows = new ArrayList<>(snapshot.size());
+            List<Object[]> out = new ArrayList<>(snap.size());
 
-            for (Map.Entry<String, MethodMetrics> entry : snapshot.entrySet()) {
-                MethodMetrics m = entry.getValue();
-                String key = entry.getKey();
-
-                // Apply text filter
+            for (Map.Entry<String, MethodMetrics> e : snap.entrySet()) {
+                MethodMetrics m = e.getValue();
+                String key = e.getKey();
                 if (!filter.isEmpty() && !key.toLowerCase().contains(filter)) continue;
 
-                // Slow-only filter
-                if (slowOnly && m.getAverageTimeMs() <= threshold) continue;
-
-                if (slowOnly) {
-                    newRows.add(new Object[]{
-                            key, m.getCallCount(),
-                            m.getAverageTimeMs(), m.getMaxTimeMs(),
-                            m.getErrorCount()
+                if (mode == 0) {
+                    out.add(new Object[]{
+                        statusOf(m.getAverageTimeMs(), m.getErrorRate()*100, threshold),
+                        key, m.getCallCount(), m.getTotalTimeMs(), m.getAverageTimeMs(),
+                        m.getMinTimeMs(), m.getMaxTimeMs(), m.getErrorCount(), m.getErrorRate()*100.0
+                    });
+                } else if (mode == 1) {
+                    if (m.getAverageTimeMs() <= threshold) continue;
+                    out.add(new Object[]{
+                        m.getAverageTimeMs() > threshold ? "SLOW" : "WARN",
+                        key, m.getCallCount(), m.getAverageTimeMs(), m.getMaxTimeMs(), m.getErrorCount()
                     });
                 } else {
-                    newRows.add(new Object[]{
-                            key, m.getCallCount(),
-                            m.getTotalTimeMs(), m.getAverageTimeMs(),
-                            m.getMinTimeMs(), m.getMaxTimeMs(),
-                            m.getErrorCount(),
-                            m.getErrorRate() * 100.0
+                    if (m.getErrorCount() == 0) continue;
+                    out.add(new Object[]{
+                        key, m.getErrorCount(), m.getCallCount(), m.getErrorRate()*100.0,
+                        m.getLastExceptionType().isEmpty() ? "—" : m.getLastExceptionType()
                     });
                 }
             }
 
-            // Sort by avg time descending (col index depends on mode)
-            int avgCol = slowOnly ? 2 : 3;
-            newRows.sort((a, b) -> Double.compare((Double) b[avgCol], (Double) a[avgCol]));
-            rows = newRows;
+            if (mode == 2) out.sort((a, b) -> Long.compare((Long)b[1], (Long)a[1]));
+            else { int c = mode == 1 ? 3 : 4; out.sort((a, b) -> Double.compare((Double)b[c], (Double)a[c])); }
+            rows = out;
             fireTableDataChanged();
         }
 
         @Override public int getRowCount()    { return rows.size(); }
         @Override public int getColumnCount() { return columns.length; }
-        @Override public String getColumnName(int col) { return columns[col]; }
-
-        @Override
-        public Object getValueAt(int row, int col) {
-            if (row >= rows.size()) return null;
-            return rows.get(row)[col];
-        }
-
-        @Override
-        public Class<?> getColumnClass(int col) {
-            if (col == 0) return String.class;
-            if (columns[col].equals("Calls") || columns[col].equals("Errors")) return Long.class;
+        @Override public String getColumnName(int c) { return columns[c]; }
+        @Override public Object getValueAt(int r, int c) { return r < rows.size() ? rows.get(r)[c] : null; }
+        @Override public Class<?> getColumnClass(int c) {
+            String n = columns[c];
+            if ("Status".equals(n) || "Method".equals(n) || "Last Exception".equals(n)) return String.class;
+            if ("Calls".equals(n) || "Errors".equals(n)) return Long.class;
             return Double.class;
         }
 
-        double getAvgMs(int row) {
-            if (row < 0 || row >= rows.size()) return 0;
-            int avgCol = slowOnly ? 2 : 3;
-            return (Double) rows.get(row)[avgCol];
+        double avgMs(int r) {
+            if (r < 0 || r >= rows.size()) return 0;
+            return mode == 0 ? (Double) rows.get(r)[4] : mode == 1 ? (Double) rows.get(r)[3] : 0;
+        }
+        double errRate(int r) {
+            if (r < 0 || r >= rows.size()) return 0;
+            return mode == 0 ? (Double) rows.get(r)[8] : mode == 2 ? (Double) rows.get(r)[3] : 0;
         }
 
-        double getErrorRate(int row) {
-            if (slowOnly || row < 0 || row >= rows.size()) return 0;
-            return (Double) rows.get(row)[7]; // Err% column
+        private static String statusOf(double avg, double errPct, long threshold) {
+            if (errPct > 10.0)       return "ERROR";
+            if (avg > threshold)     return "SLOW";
+            if (avg > threshold*0.5) return "WARN";
+            return "OK";
         }
     }
 
-    // ─────────────────────────────────────────────── Renderer
+    // ═══════════════════════════════════════════════════════════════════
+    //  CUSTOM TABLE CELL RENDERER — status pill + colour-coded rows
+    // ═══════════════════════════════════════════════════════════════════
+
     private static final class ApmCellRenderer extends DefaultTableCellRenderer {
         private final MetricsTableModel model;
+        private String statusValue = "";
 
-        ApmCellRenderer(MetricsTableModel model) {
-            this.model = model;
+        ApmCellRenderer(MetricsTableModel m) { this.model = m; }
+
+        @Override
+        public Component getTableCellRendererComponent(JTable t, Object val,
+                                                       boolean sel, boolean focus, int row, int col) {
+            super.getTableCellRendererComponent(t, val, sel, focus, row, col);
+            setFont(FONT_MONO);
+            setBorder(BorderFactory.createEmptyBorder(0, SP_MD, 0, SP_MD));
+
+            int mr = t.convertRowIndexToModel(row);
+            long thr = AgentConfig.getInstance().getSlowThresholdMs();
+            double avg = model.avgMs(mr);
+            double err = model.errRate(mr);
+            String colName = t.getColumnName(col);
+
+            if (!sel) {
+                Color bg, fg;
+                if (err > 10) { bg = ROW_RED_BG; fg = RED; }
+                else if (avg > thr)   { bg = ROW_RED_BG; fg = RED; }
+                else if (avg > thr*.5){ bg = ROW_YELLOW_BG; fg = YELLOW; }
+                else { bg = row%2==0 ? SURFACE_2 : SURFACE_4; fg = TEXT_PRIMARY; }
+                setBackground(bg);
+                setForeground(fg);
+
+                if ("Method".equals(colName) || "Last Exception".equals(colName)) setForeground(TEXT_PRIMARY);
+                if ("Status".equals(colName)) {
+                    statusValue = val != null ? val.toString() : "";
+                    setText("");
+                }
+            } else {
+                setBackground(new Color(BLUE.getRed(), BLUE.getGreen(), BLUE.getBlue(), 50));
+                setForeground(isDarkTheme ? Color.WHITE : TEXT_PRIMARY);
+                if ("Status".equals(colName)) { statusValue = val != null ? val.toString() : ""; setText(""); }
+            }
+
+            if ("Method".equals(colName) || "Last Exception".equals(colName))
+                setHorizontalAlignment(SwingConstants.LEFT);
+            else if ("Status".equals(colName))
+                setHorizontalAlignment(SwingConstants.CENTER);
+            else
+                setHorizontalAlignment(SwingConstants.RIGHT);
+
+            if (val instanceof Double) setText(String.format("%.2f", val));
+            return this;
         }
 
         @Override
-        public Component getTableCellRendererComponent(JTable table, Object value,
-                                                       boolean isSelected, boolean hasFocus,
-                                                       int row, int col) {
-            Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, col);
-            c.setFont(monoFont());
-
-            if (!isSelected) {
-                int modelRow = table.convertRowIndexToModel(row);
-                long threshold = AgentConfig.getInstance().getSlowThresholdMs();
-                double avgMs = model.getAvgMs(modelRow);
-                double errRate = model.getErrorRate(modelRow);
-
-                if (avgMs > threshold) {
-                    c.setBackground(SLOW_BG);
-                    c.setForeground(SLOW_FG);
-                } else if (avgMs > threshold * 0.5) {
-                    c.setBackground(WARN_BG);
-                    c.setForeground(WARN_FG);
-                } else if (errRate > 10.0) {
-                    c.setBackground(new Color(60, 25, 30));
-                    c.setForeground(ERROR_FG);
-                } else {
-                    c.setBackground(row % 2 == 0 ? BG_TABLE : BG_TABLE_ALT);
-                    c.setForeground(FG_PRIMARY);
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            if (!statusValue.isEmpty()) {
+                Graphics2D g2 = gfx(g);
+                Color pill, pillText;
+                String label;
+                switch (statusValue) {
+                    case "OK":    pill = new Color(GREEN.getRed(), GREEN.getGreen(), GREEN.getBlue(), isDarkTheme ? 35 : 50);
+                                  pillText = GREEN; label = "OK"; break;
+                    case "WARN":  pill = new Color(YELLOW.getRed(), YELLOW.getGreen(), YELLOW.getBlue(), isDarkTheme ? 35 : 50);
+                                  pillText = YELLOW; label = "WARN"; break;
+                    case "SLOW":  pill = new Color(RED.getRed(), RED.getGreen(), RED.getBlue(), isDarkTheme ? 35 : 50);
+                                  pillText = RED; label = "SLOW"; break;
+                    case "ERROR": pill = new Color(RED.getRed(), RED.getGreen(), RED.getBlue(), isDarkTheme ? 50 : 65);
+                                  pillText = RED; label = "ERR"; break;
+                    default:      pill = SURFACE_3; pillText = TEXT_SECONDARY; label = statusValue; break;
                 }
-            } else {
-                c.setBackground(ACCENT_BLUE.darker());
-                c.setForeground(Color.WHITE);
+                g2.setFont(FONT_CAPTION_BOLD);
+                FontMetrics fm = g2.getFontMetrics();
+                int tw = fm.stringWidth(label);
+                int pw = tw + 16, ph = 20;
+                int px = (getWidth() - pw) / 2, py = (getHeight() - ph) / 2;
+                g2.setColor(pill);
+                g2.fill(new RoundRectangle2D.Float(px, py, pw, ph, ph, ph));
+                g2.setColor(pillText);
+                g2.drawString(label, px + 8, py + fm.getAscent() + (ph - fm.getHeight()) / 2);
+                g2.dispose();
+                statusValue = "";
             }
-
-            // Alignment
-            JLabel label = (JLabel) c;
-            if (col >= 1) {
-                label.setHorizontalAlignment(SwingConstants.RIGHT);
-            } else {
-                label.setHorizontalAlignment(SwingConstants.LEFT);
-            }
-
-            // Formatting
-            if (value instanceof Double) {
-                setText(String.format("%.3f", value));
-            }
-
-            label.setBorder(BorderFactory.createEmptyBorder(0, 8, 0, 8));
-            return c;
         }
     }
 
-    // ─────────────────────────────────────────────── Launch
+    // ═══════════════════════════════════════════════════════════════════
+    //  CUSTOM TABLE HEADER RENDERER
+    // ═══════════════════════════════════════════════════════════════════
+
+    private static final class HeaderRenderer extends DefaultTableCellRenderer {
+        @Override
+        public Component getTableCellRendererComponent(JTable t, Object val,
+                                                       boolean sel, boolean focus, int row, int col) {
+            JLabel l = (JLabel) super.getTableCellRendererComponent(t, val, sel, focus, row, col);
+            l.setFont(FONT_CAPTION_BOLD);
+            l.setForeground(TEXT_SECONDARY);
+            l.setBackground(SURFACE_1);
+            l.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER_0),
+                    BorderFactory.createEmptyBorder(SP_SM, SP_MD, SP_SM, SP_MD)
+            ));
+            l.setHorizontalAlignment(col == 0 ? SwingConstants.CENTER
+                    : ("Method".equals(val) || "Last Exception".equals(val)) ? SwingConstants.LEFT
+                    : SwingConstants.RIGHT);
+            return l;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  JVM MEMORY BAR (custom-painted)
+    // ═══════════════════════════════════════════════════════════════════
+
+    private static final class MemoryBar extends JPanel {
+        private double pct = 0;
+        private String text = "";
+
+        MemoryBar() {
+            setPreferredSize(new Dimension(0, 26));
+            setOpaque(false);
+        }
+
+        void update(long usedMB, long totalMB) {
+            pct = totalMB > 0 ? (double)usedMB/totalMB : 0;
+            text = String.format("JVM Heap   %d MB / %d MB   (%.0f%%)", usedMB, totalMB, pct*100);
+            repaint();
+        }
+
+        @Override protected void paintComponent(Graphics g) {
+            Graphics2D g2 = gfx(g);
+            int x=SP_LG, y=3, w=getWidth()-SP_LG*2, h=getHeight()-6;
+
+            // Track
+            g2.setColor(SURFACE_3);
+            g2.fill(new RoundRectangle2D.Float(x, y, w, h, h, h));
+
+            // Fill
+            int fw = Math.max(0, (int)(w * pct));
+            if (fw > 0) {
+                Color c = pct<0.6 ? GREEN : pct<0.85 ? YELLOW : RED;
+                g2.setPaint(new GradientPaint(x, y, c, x+fw, y, c.darker()));
+                g2.fill(new RoundRectangle2D.Float(x, y, fw, h, h, h));
+            }
+
+            // Text
+            g2.setFont(FONT_CAPTION);
+            g2.setColor(TEXT_PRIMARY);
+            FontMetrics fm = g2.getFontMetrics();
+            g2.drawString(text, x+(w-fm.stringWidth(text))/2, y+(h+fm.getAscent()-fm.getDescent())/2);
+
+            g2.dispose();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  CUSTOM TABBED PANE UI — flat tabs with bottom accent line
+    // ═══════════════════════════════════════════════════════════════════
+
+    private static final class FlatTabbedPaneUI extends BasicTabbedPaneUI {
+        @Override protected void installDefaults() {
+            super.installDefaults();
+            tabAreaInsets = new Insets(0, SP_MD, 0, SP_MD);
+            selectedTabPadInsets = new Insets(0, 0, 0, 0);
+            tabInsets = new Insets(SP_SM+2, SP_LG, SP_SM+2, SP_LG);
+            contentBorderInsets = new Insets(0, 0, 0, 0);
+        }
+        @Override protected void paintTabBorder(Graphics g, int placement, int idx,
+                                                 int x, int y, int w, int h, boolean sel) { }
+        @Override protected void paintTabBackground(Graphics g, int placement, int idx,
+                                                     int x, int y, int w, int h, boolean sel) {
+            Graphics2D g2 = gfx(g);
+            if (sel) {
+                g2.setColor(new Color(BLUE.getRed(), BLUE.getGreen(), BLUE.getBlue(), isDarkTheme ? 20 : 30));
+                g2.fill(new RoundRectangle2D.Float(x+2, y+2, w-4, h-2, RADIUS_SM, RADIUS_SM));
+                g2.setColor(BLUE);
+                g2.fillRect(x+4, y+h-3, w-8, 3);
+            }
+            g2.dispose();
+        }
+        @Override protected void paintContentBorder(Graphics g, int placement, int sel) { }
+        @Override protected void paintFocusIndicator(Graphics g, int placement, Rectangle[] rects,
+                                                      int idx, Rectangle icon, Rectangle text, boolean sel) { }
+        @Override protected int calculateTabWidth(int placement, int idx, FontMetrics fm) {
+            return super.calculateTabWidth(placement, idx, fm) + SP_LG;
+        }
+        @Override protected int calculateTabHeight(int placement, int idx, int fontH) {
+            return fontH + SP_LG + SP_SM;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  ENTRY POINT
+    // ═══════════════════════════════════════════════════════════════════
+
     public static void launch() {
         SwingUtilities.invokeLater(MetricsDashboard::createAndShow);
     }
 
     private static void createAndShow() {
-        try {
-            UIManager.setLookAndFeel(UIManager.getCrossPlatformLookAndFeelClassName());
-        } catch (Exception ignored) { }
+        try { UIManager.setLookAndFeel(UIManager.getCrossPlatformLookAndFeelClassName()); }
+        catch (Exception ignored) {}
 
-        // Global UI defaults for dark theme
-        UIManager.put("Panel.background", BG_DARK);
-        UIManager.put("OptionPane.background", BG_PANEL);
-        UIManager.put("OptionPane.messageForeground", FG_PRIMARY);
+        mainFrame = new JFrame("Java Agent APM — Performance Dashboard");
+        mainFrame.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+        mainFrame.setSize(1300, 850);
+        mainFrame.setMinimumSize(new Dimension(980, 640));
+        mainFrame.setLocationRelativeTo(null);
 
-        JFrame frame = new JFrame("⚡ Java Agent APM Dashboard");
-        frame.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
-        frame.setSize(1200, 750);
-        frame.setMinimumSize(new Dimension(900, 550));
-        frame.setLocationRelativeTo(null);
-        frame.getContentPane().setBackground(BG_DARK);
+        buildUI(mainFrame);
+        mainFrame.setVisible(true);
+    }
 
-        // ────────────── Header bar
-        JPanel headerBar = createHeaderBar();
+    // ═══════════════════════════════════════════════════════════════════
+    //  BUILD UI — called on initial launch AND on theme toggle
+    // ═══════════════════════════════════════════════════════════════════
 
-        // ────────────── Stats strip
-        JLabel statMethods = createStatLabel("0");
-        JLabel statInvocations = createStatLabel("0");
-        JLabel statErrors = createStatLabel("0");
-        JLabel statUptime = createStatLabel("0s");
-        JPanel statsPanel = createStatsStrip(statMethods, statInvocations, statErrors, statUptime);
+    private static void buildUI(JFrame frame) {
+        // Apply UIManager defaults for current theme
+        UIManager.put("Panel.background", SURFACE_0);
+        UIManager.put("OptionPane.background", SURFACE_2);
+        UIManager.put("OptionPane.messageForeground", TEXT_PRIMARY);
 
-        // ────────────── Tabbed pane
-        JTabbedPane tabs = new JTabbedPane();
-        tabs.setBackground(BG_PANEL);
-        tabs.setForeground(FG_PRIMARY);
-        tabs.setFont(FONT_UI_BOLD);
-        tabs.setBorder(BorderFactory.createEmptyBorder(0, 12, 12, 12));
+        frame.getContentPane().setBackground(SURFACE_0);
 
-        // Tab 1: All Methods
-        MetricsTableModel allModel = new MetricsTableModel(ALL_COLUMNS, false);
-        JPanel allMethodsTab = createTableTab(allModel, ALL_COLUMNS, "Search methods...");
-        tabs.addTab("📊 All Methods", allMethodsTab);
+        // ── Header ──
+        JPanel header = buildHeader(frame);
 
-        // Tab 2: Slow Methods
-        MetricsTableModel slowModel = new MetricsTableModel(SLOW_COLUMNS, true);
-        JPanel slowTab = createTableTab(slowModel, SLOW_COLUMNS, "Filter slow methods...");
-        tabs.addTab("🐌 Slow Methods", slowTab);
+        // ── Memory Bar ──
+        MemoryBar memBar = new MemoryBar();
 
-        // Tab 3: Call Traces
-        JPanel tracesTab = createTracesTab();
-        tabs.addTab("🌳 Call Traces", tracesTab);
+        // ── Stats ──
+        JLabel sM = statVal("0"), sI = statVal("0"), sE = statVal("0"), sU = statVal("0s");
+        JPanel stats = buildStats(sM, sI, sE, sU);
 
-        // Tab 4: Configuration
-        JPanel configTab = createConfigTab();
-        tabs.addTab("⚙️ Configuration", configTab);
+        // ── Tabs ──
+        JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP);
+        tabs.setUI(new FlatTabbedPaneUI());
+        tabs.setBackground(SURFACE_0);
+        tabs.setForeground(TEXT_PRIMARY);
+        tabs.setFont(FONT_BODY_BOLD);
+        tabs.setBorder(BorderFactory.createEmptyBorder(0, SP_SM, SP_MD, SP_SM));
 
-        // ────────────── Status bar
-        JLabel statusLabel = new JLabel("  Ready");
-        statusLabel.setFont(FONT_UI);
-        statusLabel.setForeground(FG_SECONDARY);
-        statusLabel.setBackground(BG_CARD);
-        statusLabel.setOpaque(true);
-        statusLabel.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(1, 0, 0, 0, BG_HEADER),
-                BorderFactory.createEmptyBorder(6, 12, 6, 12)
-        ));
+        MetricsTableModel allModel  = new MetricsTableModel(ALL_COLUMNS, 0);
+        MetricsTableModel slowModel = new MetricsTableModel(SLOW_COLUMNS, 1);
+        MetricsTableModel errModel  = new MetricsTableModel(ERROR_COLUMNS, 2);
 
-        // ────────────── Layout
-        JPanel topSection = new JPanel(new BorderLayout());
-        topSection.setBackground(BG_DARK);
-        topSection.add(headerBar, BorderLayout.NORTH);
-        topSection.add(statsPanel, BorderLayout.SOUTH);
+        tabs.addTab("  All Methods  ",  buildTableTab(allModel,  "Search all methods..."));
+        tabs.addTab("  Slow Methods  ", buildTableTab(slowModel, "Search slow methods..."));
+        tabs.addTab("  Errors  ",       buildTableTab(errModel,  "Search errors..."));
+        tabs.addTab("  Call Traces  ",  buildTracesTab());
+        tabs.addTab("  Configuration  ",buildConfigTab());
+
+        // ── Status bar ──
+        JLabel status = new JLabel("  Ready");
+        status.setFont(FONT_CAPTION);
+        status.setForeground(TEXT_TERTIARY);
+        status.setBackground(SURFACE_1);
+        status.setOpaque(true);
+        status.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(1, 0, 0, 0, BORDER_0),
+                BorderFactory.createEmptyBorder(SP_SM, SP_LG, SP_SM, SP_LG)));
+
+        // ── Assemble ──
+        JPanel top = new JPanel();
+        top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
+        top.setBackground(SURFACE_0);
+        for (JComponent c : new JComponent[]{header, memBar, stats}) {
+            c.setAlignmentX(Component.LEFT_ALIGNMENT);
+            c.setMaximumSize(new Dimension(Integer.MAX_VALUE, c.getPreferredSize().height));
+            top.add(c);
+        }
 
         frame.getContentPane().setLayout(new BorderLayout());
-        frame.getContentPane().add(topSection, BorderLayout.NORTH);
+        frame.getContentPane().add(top, BorderLayout.NORTH);
         frame.getContentPane().add(tabs, BorderLayout.CENTER);
-        frame.getContentPane().add(statusLabel, BorderLayout.SOUTH);
+        frame.getContentPane().add(status, BorderLayout.SOUTH);
 
-        // ────────────── Refresh timer
-        javax.swing.Timer refreshTimer = new javax.swing.Timer(1000, e -> {
+        // ── Refresh Timer (1 s) ──
+        refreshTimer = new javax.swing.Timer(1000, e -> {
             allModel.refreshData();
             slowModel.refreshData();
+            errModel.refreshData();
 
             MetricsRegistry reg = MetricsRegistry.getInstance();
-            statMethods.setText(String.valueOf(reg.getMethodCount()));
-            statInvocations.setText(formatNumber(reg.getTotalInvocations()));
-            statErrors.setText(String.valueOf(reg.getTotalErrors()));
-            statUptime.setText(formatUptime(reg.getUptimeMillis()));
+            sM.setText(String.valueOf(reg.getMethodCount()));
+            sI.setText(fmtNum(reg.getTotalInvocations()));
+            sE.setText(String.valueOf(reg.getTotalErrors()));
+            sU.setText(fmtUptime(reg.getUptimeMillis()));
+
+            Runtime rt = Runtime.getRuntime();
+            long used = (rt.totalMemory()-rt.freeMemory())/(1024*1024);
+            long total = rt.totalMemory()/(1024*1024);
+            memBar.update(used, total);
 
             AgentConfig cfg = AgentConfig.getInstance();
-            long slowCount = reg.getSlowMethods(cfg.getSlowThresholdMs()).size();
-            statusLabel.setText(String.format(
-                    "  ● %d methods tracked  |  %d slow (>%dms)  |  HTTP: localhost:%d  |  Threshold: %dms",
-                    reg.getMethodCount(), slowCount, cfg.getSlowThresholdMs(),
-                    cfg.getHttpPort(), cfg.getSlowThresholdMs()
-            ));
+            long slow = reg.getSlowMethods(cfg.getSlowThresholdMs()).size();
+            long errs = reg.getTotalErrors();
+
+            tabs.setTitleAt(1, slow > 0 ? String.format("  Slow (%d)  ", slow) : "  Slow Methods  ");
+            tabs.setTitleAt(2, errs > 0 ? String.format("  Errors (%d)  ", errs) : "  Errors  ");
+
+            status.setText(String.format(
+                "  %d methods   |   %d slow (>%dms)   |   %d errors   |   HTTP ::%d   |   Heap %dMB / %dMB",
+                reg.getMethodCount(), slow, cfg.getSlowThresholdMs(), errs, cfg.getHttpPort(), used, total));
         });
         refreshTimer.setInitialDelay(300);
         refreshTimer.start();
-
-        frame.setVisible(true);
     }
 
-    // ─────────────────────────────────────────────── Header Bar
-    private static JPanel createHeaderBar() {
-        JPanel bar = new JPanel(new BorderLayout());
-        bar.setBackground(BG_PANEL);
-        bar.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(0, 0, 1, 0, new Color(60, 62, 80)),
-                BorderFactory.createEmptyBorder(14, 20, 14, 20)
-        ));
+    // ═══════════════════════════════════════════════════════════════════
+    //  THEME TOGGLE — swap palette, persist preference, rebuild UI
+    // ═══════════════════════════════════════════════════════════════════
 
-        JLabel title = new JLabel("⚡ Java Agent APM");
-        title.setFont(FONT_TITLE);
-        title.setForeground(FG_ACCENT);
+    private static void toggleTheme() {
+        isDarkTheme = !isDarkTheme;
 
-        JLabel subtitle = new JLabel("Lightweight Application Performance Monitor");
-        subtitle.setFont(FONT_UI);
-        subtitle.setForeground(FG_SECONDARY);
+        // 1. Swap the colour palette
+        if (isDarkTheme) applyDarkPalette(); else applyLightPalette();
 
+        // 2. Persist preference
+        Preferences.userNodeForPackage(MetricsDashboard.class)
+                .putBoolean(PREF_DARK_THEME, isDarkTheme);
+
+        // 3. Stop old timer
+        if (refreshTimer != null) refreshTimer.stop();
+
+        // 4. Rebuild entire UI with new palette
+        mainFrame.getContentPane().removeAll();
+        buildUI(mainFrame);
+        mainFrame.revalidate();
+        mainFrame.repaint();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  HEADER BAR (with theme toggle button)
+    // ═══════════════════════════════════════════════════════════════════
+
+    private static JPanel buildHeader(JFrame frame) {
+        JPanel bar = new JPanel(new BorderLayout()) {
+            @Override protected void paintComponent(Graphics g) {
+                Graphics2D g2 = gfx(g);
+                g2.setColor(SURFACE_1);
+                g2.fillRect(0, 0, getWidth(), getHeight());
+                // Bottom gradient accent line
+                g2.setPaint(new GradientPaint(0, getHeight()-2, BLUE, getWidth(), getHeight()-2, PURPLE));
+                g2.fillRect(0, getHeight()-2, getWidth(), 2);
+                g2.dispose();
+            }
+        };
+        bar.setBorder(BorderFactory.createEmptyBorder(SP_LG, SP_XL, SP_LG, SP_XL));
+        bar.setPreferredSize(new Dimension(0, 72));
+
+        // Title
         JPanel titleGroup = new JPanel();
         titleGroup.setLayout(new BoxLayout(titleGroup, BoxLayout.Y_AXIS));
-        titleGroup.setBackground(BG_PANEL);
+        titleGroup.setOpaque(false);
+
+        JLabel title = new JLabel("Java Agent APM");
+        title.setFont(FONT_H1);
+        title.setForeground(TEXT_PRIMARY);
+
+        JLabel sub = new JLabel("Lightweight Application Performance Monitor");
+        sub.setFont(FONT_CAPTION);
+        sub.setForeground(TEXT_TERTIARY);
+
         titleGroup.add(title);
         titleGroup.add(Box.createVerticalStrut(2));
-        titleGroup.add(subtitle);
+        titleGroup.add(sub);
 
-        // Clear metrics button
-        JButton clearBtn = createStyledButton("Clear Metrics", ERROR_FG);
-        clearBtn.addActionListener(e -> {
-            MetricsRegistry.getInstance().clear();
-            CallTracer.getInstance().clear();
+        // Buttons
+        JPanel btns = new JPanel(new FlowLayout(FlowLayout.RIGHT, SP_SM, 0));
+        btns.setOpaque(false);
+
+        // ── Theme toggle button ──
+        String themeText = isDarkTheme ? "Light" : "Dark";
+        JButton themeBtn = styledButton(themeText, isDarkTheme ? YELLOW : PURPLE);
+        themeBtn.setToolTipText("Switch to " + (isDarkTheme ? "light" : "dark") + " theme");
+        themeBtn.addActionListener(e -> toggleTheme());
+
+        JButton exportBtn = styledButton("Export CSV", CYAN);
+        exportBtn.setToolTipText("Export all metrics as a .csv file");
+        exportBtn.addActionListener(e -> exportCsv(frame));
+
+        JButton resetBtn = styledButton("Reset All", ORANGE);
+        resetBtn.setToolTipText("Clear all metrics, errors, and call traces");
+        resetBtn.addActionListener(e -> {
+            int r = JOptionPane.showConfirmDialog(frame,
+                    "This will clear all collected metrics, errors,\nand call traces. Continue?",
+                    "Reset Metrics", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (r == JOptionPane.YES_OPTION) {
+                MetricsRegistry.getInstance().clear();
+                CallTracer.getInstance().clear();
+            }
         });
 
+        btns.add(themeBtn);
+        btns.add(exportBtn);
+        btns.add(resetBtn);
+
         bar.add(titleGroup, BorderLayout.WEST);
-        bar.add(clearBtn, BorderLayout.EAST);
+        bar.add(btns, BorderLayout.EAST);
         return bar;
     }
 
-    // ─────────────────────────────────────────────── Stats Strip
-    private static JPanel createStatsStrip(JLabel methods, JLabel invocations, JLabel errors, JLabel uptime) {
-        JPanel strip = new JPanel(new GridLayout(1, 4, 12, 0));
-        strip.setBackground(BG_DARK);
-        strip.setBorder(BorderFactory.createEmptyBorder(12, 16, 8, 16));
+    // ═══════════════════════════════════════════════════════════════════
+    //  STATS STRIP
+    // ═══════════════════════════════════════════════════════════════════
 
-        strip.add(createStatCard("Methods Tracked", methods, ACCENT_BLUE));
-        strip.add(createStatCard("Total Invocations", invocations, ACCENT_CYAN));
-        strip.add(createStatCard("Total Errors", errors, ERROR_FG));
-        strip.add(createStatCard("Uptime", uptime, ACCENT_PURPLE));
-
+    private static JPanel buildStats(JLabel m, JLabel i, JLabel e, JLabel u) {
+        JPanel strip = new JPanel(new GridLayout(1, 4, SP_MD, 0));
+        strip.setOpaque(false);
+        strip.setBorder(BorderFactory.createEmptyBorder(SP_SM, SP_LG, SP_SM, SP_LG));
+        strip.add(statCard("METHODS TRACKED", m, BLUE));
+        strip.add(statCard("TOTAL INVOCATIONS", i, CYAN));
+        strip.add(statCard("TOTAL ERRORS", e, RED));
+        strip.add(statCard("UPTIME", u, PURPLE));
         return strip;
     }
 
-    private static JPanel createStatCard(String label, JLabel valueLabel, Color accentColor) {
-        JPanel card = new JPanel(new BorderLayout());
-        card.setBackground(BG_CARD);
-        card.setBorder(BorderFactory.createCompoundBorder(
-                new LineBorder(accentColor.darker(), 1, true),
-                BorderFactory.createEmptyBorder(12, 16, 12, 16)
-        ));
+    private static JPanel statCard(String label, JLabel valLabel, Color accent) {
+        JPanel card = new JPanel(new BorderLayout(0, SP_XS)) {
+            @Override protected void paintComponent(Graphics g) {
+                Graphics2D g2 = gfx(g);
+                g2.setColor(SURFACE_2);
+                g2.fill(new RoundRectangle2D.Float(0, 0, getWidth(), getHeight(), RADIUS_MD, RADIUS_MD));
+                // Left accent strip
+                g2.setPaint(new GradientPaint(0, 0, accent, 0, getHeight(), accent.darker()));
+                g2.fill(new RoundRectangle2D.Float(0, 0, 4, getHeight(), 4, 4));
+                // Border
+                g2.setColor(BORDER_0);
+                g2.draw(new RoundRectangle2D.Float(0.5f, 0.5f, getWidth()-1, getHeight()-1, RADIUS_MD, RADIUS_MD));
+                g2.dispose();
+            }
+        };
+        card.setOpaque(false);
+        card.setBorder(BorderFactory.createEmptyBorder(SP_MD, SP_LG+SP_XS, SP_MD, SP_LG));
 
-        // Top accent line
-        JPanel accentLine = new JPanel();
-        accentLine.setPreferredSize(new Dimension(0, 3));
-        accentLine.setBackground(accentColor);
+        JLabel lbl = new JLabel(label);
+        lbl.setFont(FONT_STAT_LABEL);
+        lbl.setForeground(TEXT_TERTIARY);
 
-        JLabel titleLabel = new JLabel(label.toUpperCase());
-        titleLabel.setFont(FONT_STAT_LABEL);
-        titleLabel.setForeground(FG_SECONDARY);
+        valLabel.setFont(FONT_STAT_VALUE);
+        valLabel.setForeground(accent);
 
-        valueLabel.setFont(FONT_STAT);
-        valueLabel.setForeground(accentColor);
-
-        JPanel content = new JPanel(new BorderLayout());
-        content.setBackground(BG_CARD);
-        content.add(titleLabel, BorderLayout.NORTH);
-        content.add(Box.createVerticalStrut(4), BorderLayout.CENTER);
-        content.add(valueLabel, BorderLayout.SOUTH);
-
-        card.add(accentLine, BorderLayout.NORTH);
-        card.add(content, BorderLayout.CENTER);
-
+        card.add(lbl, BorderLayout.NORTH);
+        card.add(valLabel, BorderLayout.SOUTH);
         return card;
     }
 
-    private static JLabel createStatLabel(String text) {
-        JLabel l = new JLabel(text);
-        l.setFont(FONT_STAT);
-        l.setForeground(FG_ACCENT);
+    private static JLabel statVal(String t) {
+        JLabel l = new JLabel(t);
+        l.setFont(FONT_STAT_VALUE);
+        l.setForeground(TEXT_LINK);
         return l;
     }
 
-    // ─────────────────────────────────────────────── Table Tab
-    private static JPanel createTableTab(MetricsTableModel model, String[] columns, String placeholder) {
-        JPanel panel = new JPanel(new BorderLayout(0, 8));
-        panel.setBackground(BG_DARK);
-        panel.setBorder(BorderFactory.createEmptyBorder(10, 4, 4, 4));
+    // ═══════════════════════════════════════════════════════════════════
+    //  TABLE TAB (search bar + table)
+    // ═══════════════════════════════════════════════════════════════════
+
+    private static JPanel buildTableTab(MetricsTableModel model, String placeholder) {
+        JPanel panel = new JPanel(new BorderLayout(0, SP_SM));
+        panel.setOpaque(false);
+        panel.setBorder(BorderFactory.createEmptyBorder(SP_MD, SP_SM, SP_SM, SP_SM));
 
         // Search bar
-        JTextField searchField = new JTextField();
-        searchField.setFont(FONT_UI);
-        searchField.setBackground(BG_INPUT);
-        searchField.setForeground(FG_PRIMARY);
-        searchField.setCaretColor(FG_ACCENT);
-        searchField.setBorder(BorderFactory.createCompoundBorder(
-                new LineBorder(new Color(70, 72, 90), 1, true),
-                BorderFactory.createEmptyBorder(8, 12, 8, 12)
-        ));
-        searchField.putClientProperty("JTextField.placeholderText", placeholder);
+        JPanel searchBar = roundedPanel(SURFACE_3, BORDER_1, RADIUS_SM);
+        searchBar.setLayout(new BorderLayout());
+        searchBar.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0));
+        searchBar.setPreferredSize(new Dimension(0, 38));
+        searchBar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
 
-        // Add placeholder rendering manually (cross-platform)
-        searchField.addFocusListener(new FocusAdapter() {
-            @Override public void focusGained(FocusEvent e) { searchField.repaint(); }
-            @Override public void focusLost(FocusEvent e)   { searchField.repaint(); }
-        });
+        JLabel icon = new JLabel("  \uD83D\uDD0D  ");
+        icon.setFont(FONT_BODY);
+        icon.setForeground(TEXT_TERTIARY);
 
-        JPanel searchPanel = new JPanel(new BorderLayout());
-        searchPanel.setBackground(BG_DARK);
-        JLabel searchIcon = new JLabel("  🔍 ");
-        searchIcon.setFont(FONT_UI);
-        searchIcon.setForeground(FG_SECONDARY);
-        searchPanel.add(searchIcon, BorderLayout.WEST);
-        searchPanel.add(searchField, BorderLayout.CENTER);
+        JTextField field = new JTextField() {
+            @Override protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                if (getText().isEmpty() && !hasFocus()) {
+                    Graphics2D g2 = gfx(g);
+                    g2.setFont(FONT_BODY);
+                    g2.setColor(TEXT_TERTIARY);
+                    Insets ins = getInsets();
+                    g2.drawString(placeholder, ins.left, getHeight()/2 + g2.getFontMetrics().getAscent()/2 - 1);
+                    g2.dispose();
+                }
+            }
+        };
+        field.setFont(FONT_BODY);
+        field.setBackground(SURFACE_3);
+        field.setForeground(TEXT_PRIMARY);
+        field.setCaretColor(BLUE);
+        field.setBorder(BorderFactory.createEmptyBorder(SP_SM, SP_SM, SP_SM, SP_SM));
+        field.setOpaque(false);
+
+        JLabel count = new JLabel("0 results  ");
+        count.setFont(FONT_CAPTION);
+        count.setForeground(TEXT_TERTIARY);
+
+        searchBar.add(icon, BorderLayout.WEST);
+        searchBar.add(field, BorderLayout.CENTER);
+        searchBar.add(count, BorderLayout.EAST);
 
         // Table
         JTable table = new JTable(model);
-        styleTable(table, model);
+        applyTableStyle(table, model);
 
-        searchField.getDocument().addDocumentListener(new DocumentListener() {
-            private void update() { model.setFilter(searchField.getText()); model.refreshData(); }
-            @Override public void insertUpdate(DocumentEvent e) { update(); }
-            @Override public void removeUpdate(DocumentEvent e) { update(); }
-            @Override public void changedUpdate(DocumentEvent e) { update(); }
+        field.getDocument().addDocumentListener(new DocumentListener() {
+            void u() { model.setFilter(field.getText()); model.refreshData(); count.setText(model.getRowCount()+" results  "); }
+            @Override public void insertUpdate(DocumentEvent e) { u(); }
+            @Override public void removeUpdate(DocumentEvent e) { u(); }
+            @Override public void changedUpdate(DocumentEvent e){ u(); }
         });
+        model.addTableModelListener(e -> count.setText(model.getRowCount()+" results  "));
 
-        JScrollPane scrollPane = new JScrollPane(table);
-        scrollPane.setBorder(BorderFactory.createLineBorder(new Color(55, 57, 72), 1));
-        scrollPane.getViewport().setBackground(BG_TABLE);
+        JScrollPane scroll = new JScrollPane(table);
+        scroll.setBorder(BorderFactory.createLineBorder(BORDER_0));
+        scroll.getViewport().setBackground(SURFACE_2);
+        scroll.getVerticalScrollBar().setUnitIncrement(16);
 
-        panel.add(searchPanel, BorderLayout.NORTH);
-        panel.add(scrollPane, BorderLayout.CENTER);
-
+        panel.add(searchBar, BorderLayout.NORTH);
+        panel.add(scroll, BorderLayout.CENTER);
         return panel;
     }
 
-    private static void styleTable(JTable table, MetricsTableModel model) {
-        table.setBackground(BG_TABLE);
-        table.setForeground(FG_PRIMARY);
-        table.setGridColor(new Color(55, 57, 72));
-        table.setSelectionBackground(ACCENT_BLUE.darker());
-        table.setSelectionForeground(Color.WHITE);
-        table.setFillsViewportHeight(true);
-        table.setRowHeight(32);
-        table.setFont(monoFont());
-        table.setShowHorizontalLines(true);
-        table.setShowVerticalLines(false);
-        table.setIntercellSpacing(new Dimension(0, 1));
-        table.setAutoCreateRowSorter(true);
+    private static void applyTableStyle(JTable t, MetricsTableModel model) {
+        t.setBackground(SURFACE_2);
+        t.setForeground(TEXT_PRIMARY);
+        t.setGridColor(BORDER_0);
+        t.setSelectionBackground(new Color(BLUE.getRed(), BLUE.getGreen(), BLUE.getBlue(), 40));
+        t.setSelectionForeground(isDarkTheme ? Color.WHITE : TEXT_PRIMARY);
+        t.setFillsViewportHeight(true);
+        t.setRowHeight(36);
+        t.setFont(FONT_MONO);
+        t.setShowHorizontalLines(true);
+        t.setShowVerticalLines(false);
+        t.setIntercellSpacing(new Dimension(0, 1));
+        t.setAutoCreateRowSorter(true);
 
-        // Header
-        table.getTableHeader().setBackground(BG_HEADER);
-        table.getTableHeader().setForeground(FG_HEADER);
-        table.getTableHeader().setFont(FONT_UI_BOLD);
-        table.getTableHeader().setBorder(BorderFactory.createMatteBorder(0, 0, 2, 0, ACCENT_BLUE));
-        table.getTableHeader().setReorderingAllowed(false);
+        JTableHeader h = t.getTableHeader();
+        h.setDefaultRenderer(new HeaderRenderer());
+        h.setPreferredSize(new Dimension(0, 36));
+        h.setReorderingAllowed(false);
+        h.setBackground(SURFACE_1);
 
-        // Renderer
-        ApmCellRenderer renderer = new ApmCellRenderer(model);
-        for (int i = 0; i < table.getColumnCount(); i++) {
-            table.getColumnModel().getColumn(i).setCellRenderer(renderer);
-        }
+        ApmCellRenderer cr = new ApmCellRenderer(model);
+        for (int i = 0; i < t.getColumnCount(); i++)
+            t.getColumnModel().getColumn(i).setCellRenderer(cr);
 
-        // Column widths
-        if (table.getColumnCount() >= 8) {
-            table.getColumnModel().getColumn(0).setPreferredWidth(350);
-            for (int i = 1; i < 8; i++) {
-                table.getColumnModel().getColumn(i).setPreferredWidth(100);
-            }
-        } else if (table.getColumnCount() >= 5) {
-            table.getColumnModel().getColumn(0).setPreferredWidth(400);
+        for (int i = 0; i < t.getColumnCount(); i++) {
+            String n = t.getColumnName(i);
+            int w = 95;
+            if ("Status".equals(n)) { w = 80; t.getColumnModel().getColumn(i).setMaxWidth(100); }
+            else if ("Method".equals(n)) w = 360;
+            else if ("Last Exception".equals(n)) w = 260;
+            t.getColumnModel().getColumn(i).setPreferredWidth(w);
         }
     }
 
-    // ─────────────────────────────────────────────── Traces Tab
-    private static JPanel createTracesTab() {
-        JPanel panel = new JPanel(new BorderLayout(0, 8));
-        panel.setBackground(BG_DARK);
-        panel.setBorder(BorderFactory.createEmptyBorder(10, 4, 4, 4));
+    // ═══════════════════════════════════════════════════════════════════
+    //  TRACES TAB
+    // ═══════════════════════════════════════════════════════════════════
 
-        DefaultMutableTreeNode rootNode = new DefaultMutableTreeNode("Call Traces (most recent first)");
-        JTree tree = new JTree(rootNode);
-        tree.setBackground(BG_TABLE);
-        tree.setForeground(FG_PRIMARY);
-        tree.setFont(monoFont());
-        tree.setRowHeight(26);
+    private static JPanel buildTracesTab() {
+        JPanel panel = new JPanel(new BorderLayout(0, SP_SM));
+        panel.setOpaque(false);
+        panel.setBorder(BorderFactory.createEmptyBorder(SP_MD, SP_SM, SP_SM, SP_SM));
 
-        // Custom renderer
+        DefaultMutableTreeNode root = new DefaultMutableTreeNode("Call Traces (most recent first)");
+        JTree tree = new JTree(root);
+        tree.setBackground(SURFACE_2);
+        tree.setForeground(TEXT_PRIMARY);
+        tree.setFont(FONT_MONO);
+        tree.setRowHeight(30);
+
         tree.setCellRenderer(new DefaultTreeCellRenderer() {
             {
-                setBackgroundNonSelectionColor(BG_TABLE);
-                setBackgroundSelectionColor(ACCENT_BLUE.darker());
-                setTextNonSelectionColor(FG_PRIMARY);
-                setTextSelectionColor(Color.WHITE);
+                setBackgroundNonSelectionColor(SURFACE_2);
+                setBackgroundSelectionColor(new Color(BLUE.getRed(), BLUE.getGreen(), BLUE.getBlue(), 40));
+                setTextNonSelectionColor(TEXT_PRIMARY);
+                setTextSelectionColor(isDarkTheme ? Color.WHITE : TEXT_PRIMARY);
+                setBorderSelectionColor(BLUE);
             }
-
-            @Override
-            public Component getTreeCellRendererComponent(JTree tree, Object value,
-                                                          boolean sel, boolean expanded,
-                                                          boolean leaf, int row, boolean hasFocus) {
-                Component c = super.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus);
-                c.setFont(monoFont());
-                String text = value.toString();
-                if (text.contains("ms") && !text.startsWith("Call Traces")) {
-                    // Color based on duration
+            @Override public Component getTreeCellRendererComponent(JTree tree, Object val,
+                    boolean sel, boolean exp, boolean leaf, int row, boolean focus) {
+                Component c = super.getTreeCellRendererComponent(tree, val, sel, exp, leaf, row, focus);
+                c.setFont(FONT_MONO);
+                String txt = val.toString();
+                if (txt.contains("ms") && !txt.startsWith("Call")) {
                     try {
-                        String durStr = text.substring(text.lastIndexOf("(") + 1, text.lastIndexOf("ms")).trim();
-                        double dur = Double.parseDouble(durStr);
-                        if (dur > AgentConfig.getInstance().getSlowThresholdMs()) {
-                            setForeground(SLOW_FG);
-                        } else if (dur > AgentConfig.getInstance().getSlowThresholdMs() * 0.5) {
-                            setForeground(WARN_FG);
-                        } else {
-                            setForeground(OK_FG);
-                        }
+                        double d = Double.parseDouble(txt.substring(txt.lastIndexOf("(")+1, txt.lastIndexOf("ms")).trim());
+                        long thr = AgentConfig.getInstance().getSlowThresholdMs();
+                        setForeground(d > thr ? RED : d > thr*0.5 ? YELLOW : GREEN);
                     } catch (Exception ignored) {}
                 }
                 return c;
             }
         });
 
-        JScrollPane scrollPane = new JScrollPane(tree);
-        scrollPane.setBorder(BorderFactory.createLineBorder(new Color(55, 57, 72), 1));
-        scrollPane.getViewport().setBackground(BG_TABLE);
+        JScrollPane scroll = new JScrollPane(tree);
+        scroll.setBorder(BorderFactory.createLineBorder(BORDER_0));
+        scroll.getViewport().setBackground(SURFACE_2);
 
-        JButton refreshBtn = createStyledButton("Refresh Traces", ACCENT_CYAN);
+        JButton refreshBtn = styledButton("Refresh Traces", CYAN);
         refreshBtn.addActionListener(e -> {
-            rootNode.removeAllChildren();
+            root.removeAllChildren();
             List<CallNode> traces = CallTracer.getInstance().getRecentTraces(30);
             for (int i = 0; i < traces.size(); i++) {
-                CallNode trace = traces.get(i);
-                DefaultMutableTreeNode traceNode = new DefaultMutableTreeNode(
-                        String.format("#%d  %s (%.2fms) [%s]", i + 1, trace.getMethodKey(),
-                                trace.getDurationMs(), trace.getThreadName())
-                );
-                addCallNodeChildren(traceNode, trace);
-                rootNode.add(traceNode);
+                CallNode t2 = traces.get(i);
+                DefaultMutableTreeNode n = new DefaultMutableTreeNode(
+                        String.format("#%d  %s (%.2fms) [%s]", i+1, t2.getMethodKey(), t2.getDurationMs(), t2.getThreadName()));
+                addChildren(n, t2);
+                root.add(n);
             }
             ((DefaultTreeModel) tree.getModel()).reload();
-            // Expand first few nodes
-            for (int i = 0; i < Math.min(5, tree.getRowCount()); i++) {
-                tree.expandRow(i);
-            }
+            for (int i = 0; i < Math.min(5, tree.getRowCount()); i++) tree.expandRow(i);
         });
 
         JPanel topBar = new JPanel(new BorderLayout());
-        topBar.setBackground(BG_DARK);
-        JLabel tracesTitle = new JLabel("  🌳 Recent Call Trees  ");
-        tracesTitle.setFont(FONT_UI_BOLD);
-        tracesTitle.setForeground(FG_ACCENT);
-        topBar.add(tracesTitle, BorderLayout.WEST);
+        topBar.setOpaque(false);
+        JLabel lbl = new JLabel("  Recent Call Trees");
+        lbl.setFont(FONT_H3);
+        lbl.setForeground(TEXT_LINK);
+        topBar.add(lbl, BorderLayout.WEST);
         topBar.add(refreshBtn, BorderLayout.EAST);
 
         panel.add(topBar, BorderLayout.NORTH);
-        panel.add(scrollPane, BorderLayout.CENTER);
-
+        panel.add(scroll, BorderLayout.CENTER);
         return panel;
     }
 
-    private static void addCallNodeChildren(DefaultMutableTreeNode parent, CallNode node) {
-        for (CallNode child : node.getChildren()) {
-            DefaultMutableTreeNode childNode = new DefaultMutableTreeNode(
-                    String.format("%s (%.2fms)", child.getMethodKey(), child.getDurationMs())
-            );
-            addCallNodeChildren(childNode, child);
-            parent.add(childNode);
+    private static void addChildren(DefaultMutableTreeNode parent, CallNode node) {
+        for (CallNode ch : node.getChildren()) {
+            DefaultMutableTreeNode n = new DefaultMutableTreeNode(
+                    String.format("%s (%.2fms)", ch.getMethodKey(), ch.getDurationMs()));
+            addChildren(n, ch);
+            parent.add(n);
         }
     }
 
-    // ─────────────────────────────────────────────── Config Tab
-    private static JPanel createConfigTab() {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBackground(BG_DARK);
-        panel.setBorder(BorderFactory.createEmptyBorder(16, 16, 16, 16));
+    // ═══════════════════════════════════════════════════════════════════
+    //  CONFIGURATION TAB
+    // ═══════════════════════════════════════════════════════════════════
 
-        JPanel grid = new JPanel(new GridBagLayout());
-        grid.setBackground(BG_CARD);
-        grid.setBorder(BorderFactory.createCompoundBorder(
-                new LineBorder(new Color(60, 62, 80), 1, true),
-                BorderFactory.createEmptyBorder(20, 24, 20, 24)
-        ));
+    private static JPanel buildConfigTab() {
+        JPanel outer = new JPanel(new BorderLayout());
+        outer.setOpaque(false);
+        outer.setBorder(BorderFactory.createEmptyBorder(SP_LG, SP_LG, SP_LG, SP_LG));
 
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(8, 8, 8, 8);
-        gbc.anchor = GridBagConstraints.WEST;
-        gbc.fill = GridBagConstraints.HORIZONTAL;
+        JPanel card = roundedPanel(SURFACE_2, BORDER_0, RADIUS_MD);
+        card.setLayout(new GridBagLayout());
+        card.setBorder(BorderFactory.createEmptyBorder(SP_XL, SP_2XL, SP_XL, SP_2XL));
+
+        GridBagConstraints g = new GridBagConstraints();
+        g.insets = new Insets(SP_SM, SP_SM, SP_SM, SP_SM);
+        g.anchor = GridBagConstraints.WEST;
+        g.fill = GridBagConstraints.HORIZONTAL;
         int row = 0;
 
         AgentConfig cfg = AgentConfig.getInstance();
 
-        // Title
-        gbc.gridx = 0; gbc.gridy = row; gbc.gridwidth = 2;
-        JLabel configTitle = new JLabel("⚙️  Agent Configuration");
-        configTitle.setFont(FONT_TITLE);
-        configTitle.setForeground(FG_ACCENT);
-        grid.add(configTitle, gbc);
+        // Section title
+        g.gridx=0; g.gridy=row; g.gridwidth=2;
+        JLabel title = new JLabel("Agent Configuration");
+        title.setFont(FONT_H2);
+        title.setForeground(TEXT_PRIMARY);
+        card.add(title, g);
         row++;
 
-        gbc.gridwidth = 1;
+        // Divider
+        g.gridy=row; g.gridwidth=2;
+        JPanel div = new JPanel();
+        div.setPreferredSize(new Dimension(0, 1));
+        div.setBackground(BORDER_0);
+        card.add(div, g);
+        row++;
+
+        g.gridwidth=1;
 
         // Enabled toggle
-        gbc.gridx = 0; gbc.gridy = row;
-        grid.add(createConfigLabel("Instrumentation"), gbc);
-        gbc.gridx = 1;
-        JToggleButton enabledToggle = new JToggleButton(cfg.isEnabled() ? "● ENABLED" : "○ DISABLED");
-        enabledToggle.setSelected(cfg.isEnabled());
-        styleToggle(enabledToggle);
-        enabledToggle.addActionListener(e -> {
-            cfg.setEnabled(enabledToggle.isSelected());
-            enabledToggle.setText(enabledToggle.isSelected() ? "● ENABLED" : "○ DISABLED");
-            enabledToggle.setForeground(enabledToggle.isSelected() ? OK_FG : ERROR_FG);
+        g.gridx=0; g.gridy=row;
+        card.add(cfgLabel("Instrumentation"), g);
+        g.gridx=1;
+        JToggleButton toggle = new JToggleButton(cfg.isEnabled() ? "ENABLED" : "DISABLED");
+        toggle.setSelected(cfg.isEnabled());
+        toggle.setFont(FONT_BODY_BOLD);
+        toggle.setForeground(cfg.isEnabled() ? GREEN : RED);
+        toggle.setBackground(SURFACE_3);
+        toggle.setFocusPainted(false);
+        toggle.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        toggle.setBorder(BorderFactory.createCompoundBorder(
+                new LineBorder(BORDER_1, 1, true),
+                BorderFactory.createEmptyBorder(SP_SM, SP_LG, SP_SM, SP_LG)));
+        toggle.addActionListener(e -> {
+            cfg.setEnabled(toggle.isSelected());
+            toggle.setText(toggle.isSelected() ? "ENABLED" : "DISABLED");
+            toggle.setForeground(toggle.isSelected() ? GREEN : RED);
         });
-        grid.add(enabledToggle, gbc);
+        card.add(toggle, g);
         row++;
 
-        // Slow threshold
-        gbc.gridx = 0; gbc.gridy = row;
-        grid.add(createConfigLabel("Slow Threshold (ms)"), gbc);
-        gbc.gridx = 1;
-        JSpinner thresholdSpinner = new JSpinner(new SpinnerNumberModel(
-                (int) cfg.getSlowThresholdMs(), 1, 10000, 10));
-        thresholdSpinner.setFont(FONT_UI);
-        thresholdSpinner.setBackground(BG_INPUT);
-        thresholdSpinner.setForeground(FG_PRIMARY);
-        thresholdSpinner.addChangeListener(e ->
-                cfg.setSlowThresholdMs((Integer) thresholdSpinner.getValue()));
-        grid.add(thresholdSpinner, gbc);
+        // Threshold
+        g.gridx=0; g.gridy=row;
+        card.add(cfgLabel("Slow Threshold (ms)"), g);
+        g.gridx=1;
+        JSpinner spin = new JSpinner(new SpinnerNumberModel((int)cfg.getSlowThresholdMs(), 1, 10000, 10));
+        spin.setFont(FONT_BODY);
+        spin.setBackground(SURFACE_3);
+        spin.setForeground(TEXT_PRIMARY);
+        spin.addChangeListener(e -> cfg.setSlowThresholdMs((Integer) spin.getValue()));
+        card.add(spin, g);
         row++;
 
-        // Target package (read-only display)
-        gbc.gridx = 0; gbc.gridy = row;
-        grid.add(createConfigLabel("Target Package"), gbc);
-        gbc.gridx = 1;
-        JLabel targetLabel = new JLabel(cfg.getTargetPackage());
-        targetLabel.setFont(monoFont());
-        targetLabel.setForeground(ACCENT_CYAN);
-        grid.add(targetLabel, gbc);
-        row++;
-
-        // HTTP Port (read-only display)
-        gbc.gridx = 0; gbc.gridy = row;
-        grid.add(createConfigLabel("HTTP Endpoint"), gbc);
-        gbc.gridx = 1;
-        JLabel httpLabel = new JLabel("http://localhost:" + cfg.getHttpPort() + "/metrics");
-        httpLabel.setFont(monoFont());
-        httpLabel.setForeground(ACCENT_CYAN);
-        grid.add(httpLabel, gbc);
-        row++;
-
-        // Export path
-        gbc.gridx = 0; gbc.gridy = row;
-        grid.add(createConfigLabel("Metrics Export Path"), gbc);
-        gbc.gridx = 1;
-        JLabel exportLabel = new JLabel(cfg.getMetricsExportPath());
-        exportLabel.setFont(monoFont());
-        exportLabel.setForeground(FG_SECONDARY);
-        grid.add(exportLabel, gbc);
-        row++;
-
-        // Endpoints info
-        gbc.gridx = 0; gbc.gridy = row; gbc.gridwidth = 2;
-        JPanel endpointsCard = createEndpointsCard(cfg.getHttpPort());
-        grid.add(endpointsCard, gbc);
-
-        panel.add(grid, BorderLayout.NORTH);
-        return panel;
-    }
-
-    private static JPanel createEndpointsCard(int port) {
-        JPanel card = new JPanel();
-        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
-        card.setBackground(new Color(30, 35, 50));
-        card.setBorder(BorderFactory.createCompoundBorder(
-                new LineBorder(ACCENT_BLUE.darker(), 1, true),
-                BorderFactory.createEmptyBorder(12, 16, 12, 16)
-        ));
-
-        JLabel title = new JLabel("📡  Available HTTP Endpoints");
-        title.setFont(FONT_UI_BOLD);
-        title.setForeground(FG_ACCENT);
-        title.setAlignmentX(Component.LEFT_ALIGNMENT);
-        card.add(title);
-        card.add(Box.createVerticalStrut(8));
-
-        String[] endpoints = {
-                "GET  /metrics       — Full metrics JSON",
-                "GET  /metrics/slow  — Slow methods only",
-                "GET  /metrics/traces— Recent call trees",
-                "GET  /health        — Health check",
-                "GET  /config        — Current config",
-                "POST /config        — Update config"
+        // Read-only fields
+        String[][] info = {
+            {"Target Package", cfg.getTargetPackage()},
+            {"HTTP Endpoint", "http://localhost:" + cfg.getHttpPort() + "/metrics"},
+            {"Metrics Export Path", cfg.getMetricsExportPath()}
         };
-
-        for (String ep : endpoints) {
-            JLabel l = new JLabel("    " + ep);
-            l.setFont(monoFont());
-            l.setForeground(FG_SECONDARY);
-            l.setAlignmentX(Component.LEFT_ALIGNMENT);
-            card.add(l);
-            card.add(Box.createVerticalStrut(3));
+        for (String[] pair : info) {
+            g.gridx=0; g.gridy=row;
+            card.add(cfgLabel(pair[0]), g);
+            g.gridx=1;
+            JLabel v = new JLabel(pair[1]);
+            v.setFont(FONT_MONO);
+            v.setForeground(CYAN);
+            card.add(v, g);
+            row++;
         }
 
+        // Endpoints card
+        g.gridx=0; g.gridy=row; g.gridwidth=2; g.insets = new Insets(SP_LG, SP_SM, SP_SM, SP_SM);
+        card.add(buildEndpointsCard(cfg.getHttpPort()), g);
+
+        outer.add(card, BorderLayout.NORTH);
+        return outer;
+    }
+
+    private static JPanel buildEndpointsCard(int port) {
+        JPanel card = roundedPanel(SURFACE_1, BORDER_0, RADIUS_SM);
+        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+        card.setBorder(BorderFactory.createEmptyBorder(SP_MD, SP_LG, SP_MD, SP_LG));
+
+        JLabel h = new JLabel("HTTP Endpoints");
+        h.setFont(FONT_H3);
+        h.setForeground(TEXT_LINK);
+        h.setAlignmentX(Component.LEFT_ALIGNMENT);
+        card.add(h);
+        card.add(Box.createVerticalStrut(SP_SM));
+
+        String[][] eps = {
+            {"GET", "/metrics",       "Full metrics JSON"},
+            {"GET", "/metrics/slow",  "Slow methods only"},
+            {"GET", "/metrics/traces","Recent call trees"},
+            {"GET", "/health",        "Health check"},
+            {"GET", "/config",        "Current configuration"},
+            {"POST","/config",        "Update configuration"},
+        };
+        for (String[] ep : eps) {
+            JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, SP_SM, 1));
+            row.setOpaque(false);
+            row.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+            JLabel method = new JLabel(ep[0]);
+            method.setFont(FONT_CAPTION_BOLD);
+            method.setForeground("POST".equals(ep[0]) ? ORANGE : GREEN);
+
+            JLabel path = new JLabel(ep[1]);
+            path.setFont(FONT_MONO_SM);
+            path.setForeground(TEXT_PRIMARY);
+
+            JLabel desc = new JLabel("— " + ep[2]);
+            desc.setFont(FONT_CAPTION);
+            desc.setForeground(TEXT_TERTIARY);
+
+            row.add(method);
+            row.add(path);
+            row.add(desc);
+            card.add(row);
+        }
         return card;
     }
 
-    private static JLabel createConfigLabel(String text) {
+    private static JLabel cfgLabel(String text) {
         JLabel l = new JLabel(text);
-        l.setFont(FONT_UI_BOLD);
-        l.setForeground(FG_PRIMARY);
+        l.setFont(FONT_BODY_BOLD);
+        l.setForeground(TEXT_SECONDARY);
         return l;
     }
 
-    // ─────────────────────────────────────────────── Styled Components
-    private static JButton createStyledButton(String text, Color accentColor) {
-        JButton btn = new JButton(text);
-        btn.setFont(FONT_UI_BOLD);
-        btn.setForeground(accentColor);
-        btn.setBackground(BG_CARD);
-        btn.setBorder(BorderFactory.createCompoundBorder(
-                new LineBorder(accentColor.darker(), 1, true),
-                BorderFactory.createEmptyBorder(8, 18, 8, 18)
-        ));
-        btn.setFocusPainted(false);
-        btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+    // ═══════════════════════════════════════════════════════════════════
+    //  CSV EXPORT
+    // ═══════════════════════════════════════════════════════════════════
 
-        btn.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseEntered(MouseEvent e) {
-                btn.setBackground(accentColor.darker().darker());
-                btn.setForeground(Color.WHITE);
-            }
-            @Override
-            public void mouseExited(MouseEvent e) {
-                btn.setBackground(BG_CARD);
-                btn.setForeground(accentColor);
-            }
-        });
+    private static void exportCsv(JFrame parent) {
+        JFileChooser ch = new JFileChooser();
+        ch.setDialogTitle("Export Metrics as CSV");
+        ch.setSelectedFile(new File("agent-metrics-export.csv"));
+        ch.setFileFilter(new FileNameExtensionFilter("CSV Files (*.csv)", "csv"));
+        if (ch.showSaveDialog(parent) != JFileChooser.APPROVE_OPTION) return;
 
-        return btn;
+        File f = ch.getSelectedFile();
+        if (!f.getName().endsWith(".csv")) f = new File(f.getAbsolutePath()+".csv");
+
+        try (BufferedWriter w = new BufferedWriter(new FileWriter(f))) {
+            w.write("Method,Calls,Total (ms),Avg (ms),Min (ms),Max (ms),Errors,Error Rate (%),Last Exception");
+            w.newLine();
+            Map<String, MethodMetrics> snap = MetricsRegistry.getInstance().getMetricsSnapshot();
+            for (Map.Entry<String, MethodMetrics> e : snap.entrySet()) {
+                MethodMetrics m = e.getValue();
+                w.write(String.format("\"%s\",%d,%.3f,%.3f,%.3f,%.3f,%d,%.2f,\"%s\"",
+                        e.getKey(), m.getCallCount(), m.getTotalTimeMs(), m.getAverageTimeMs(),
+                        m.getMinTimeMs(), m.getMaxTimeMs(), m.getErrorCount(),
+                        m.getErrorRate()*100, m.getLastExceptionType()));
+                w.newLine();
+            }
+            JOptionPane.showMessageDialog(parent,
+                    "Exported "+snap.size()+" methods to:\n"+f.getAbsolutePath(),
+                    "Export Successful", JOptionPane.INFORMATION_MESSAGE);
+        } catch (IOException ex) {
+            JOptionPane.showMessageDialog(parent,
+                    "Export failed: "+ex.getMessage(),
+                    "Export Error", JOptionPane.ERROR_MESSAGE);
+        }
     }
 
-    private static void styleToggle(JToggleButton btn) {
-        btn.setFont(FONT_UI_BOLD);
-        btn.setForeground(btn.isSelected() ? OK_FG : ERROR_FG);
-        btn.setBackground(BG_INPUT);
-        btn.setBorder(BorderFactory.createCompoundBorder(
-                new LineBorder(new Color(70, 72, 90), 1, true),
-                BorderFactory.createEmptyBorder(6, 16, 6, 16)
-        ));
-        btn.setFocusPainted(false);
-        btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-    }
+    // ═══════════════════════════════════════════════════════════════════
+    //  FORMATTING HELPERS
+    // ═══════════════════════════════════════════════════════════════════
 
-    // ─────────────────────────────────────────────── Formatting helpers
-    private static String formatNumber(long n) {
-        if (n >= 1_000_000) return String.format("%.1fM", n / 1_000_000.0);
-        if (n >= 1_000) return String.format("%.1fK", n / 1_000.0);
+    private static String fmtNum(long n) {
+        if (n >= 1_000_000) return String.format("%.1fM", n/1_000_000.0);
+        if (n >= 1_000) return String.format("%.1fK", n/1_000.0);
         return String.valueOf(n);
     }
 
-    private static String formatUptime(long ms) {
-        long sec = ms / 1000;
-        if (sec < 60) return sec + "s";
-        if (sec < 3600) return (sec / 60) + "m " + (sec % 60) + "s";
-        return (sec / 3600) + "h " + ((sec % 3600) / 60) + "m";
+    private static String fmtUptime(long ms) {
+        long s = ms/1000;
+        if (s < 60) return s+"s";
+        if (s < 3600) return (s/60)+"m "+(s%60)+"s";
+        return (s/3600)+"h "+((s%3600)/60)+"m";
     }
 
-    // ─────────────────────────────────────────────── Standalone test
+    // ═══════════════════════════════════════════════════════════════════
+    //  STANDALONE TEST
+    // ═══════════════════════════════════════════════════════════════════
+
     public static void main(String[] args) {
-        MetricsRegistry reg = MetricsRegistry.getInstance();
-        reg.updateMetric("com.example.Foo#bar", 120_000_000L);
-        reg.updateMetric("com.example.Foo#bar", 80_000_000L);
-        reg.updateMetric("com.example.Baz#process", 5_000_000L);
-        reg.updateMetric("com.example.Baz#process", 3_000_000L);
-        reg.updateMetric("com.example.SlowService#heavyWork", 200_000_000L);
-        reg.recordError("com.example.SlowService#heavyWork", "java.lang.RuntimeException");
+        MetricsRegistry r = MetricsRegistry.getInstance();
+        // Healthy
+        r.updateMetric("com.example.UserService#getUser", 5_000_000L);
+        r.updateMetric("com.example.UserService#getUser", 3_000_000L);
+        r.updateMetric("com.example.UserService#getUser", 4_000_000L);
+        r.updateMetric("com.example.AuthService#login", 12_000_000L);
+        r.updateMetric("com.example.AuthService#login", 8_000_000L);
+        r.updateMetric("com.example.CacheService#get", 1_000_000L);
+        r.updateMetric("com.example.CacheService#get", 2_000_000L);
+        // Warning
+        r.updateMetric("com.example.ReportService#generate", 35_000_000L);
+        r.updateMetric("com.example.ReportService#generate", 45_000_000L);
+        // Slow
+        r.updateMetric("com.example.SlowDAO#heavyQuery", 200_000_000L);
+        r.updateMetric("com.example.SlowDAO#heavyQuery", 150_000_000L);
+        // Errors
+        r.updateMetric("com.example.PaymentService#charge", 50_000_000L);
+        r.recordError("com.example.PaymentService#charge", "java.lang.NullPointerException");
+        r.updateMetric("com.example.PaymentService#charge", 30_000_000L);
+        r.recordError("com.example.PaymentService#charge", "java.io.IOException");
+        r.updateMetric("com.example.EmailService#send", 20_000_000L);
+        r.recordError("com.example.EmailService#send", "javax.mail.MessagingException");
+
+        // Mock Call Traces
+        CallTracer ct = CallTracer.getInstance();
+        ct.enterMethod("com.example.WebApp#handleRequest");
+        ct.enterMethod("com.example.UserService#getUser");
+        ct.exitMethod("com.example.UserService#getUser", 45_000_000L);
+        ct.enterMethod("com.example.SlowDAO#heavyQuery");
+        ct.exitMethod("com.example.SlowDAO#heavyQuery", 200_000_000L);
+        ct.exitMethod("com.example.WebApp#handleRequest", 245_000_000L);
+
         launch();
     }
 }

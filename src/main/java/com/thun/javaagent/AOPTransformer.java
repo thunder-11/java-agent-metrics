@@ -30,8 +30,8 @@ import javassist.LoaderClassPath;
  */
 public class AOPTransformer implements ClassFileTransformer {
 
-    /** The fully-qualified target class for console logging (dot-separated). */
-    private final String targetClassName;
+    /** Optional target package for filtering (handled by AgentConfig now). */
+    private final String targetPackage;
 
     /** Prefixes that must never be instrumented. */
     private static final Set<String> EXCLUDED_PREFIXES = new HashSet<>(Arrays.asList(
@@ -44,8 +44,8 @@ public class AOPTransformer implements ClassFileTransformer {
             "com/thun/javaagent/export/"
     ));
 
-    public AOPTransformer(String targetClassName) {
-        this.targetClassName = targetClassName;
+    public AOPTransformer(String targetPackage) {
+        this.targetPackage = targetPackage;
     }
 
     // ------------------------------------------------------------------ core
@@ -95,7 +95,7 @@ public class AOPTransformer implements ClassFileTransformer {
             if (!matches) return null;
         }
 
-        boolean isTarget = className.equals(targetClassName.replace('.', '/'));
+        // Target matching is now correctly handled entirely by the `packageFilters` logic above.
 
         try {
             ClassPool classPool = ClassPool.getDefault();
@@ -141,10 +141,6 @@ public class AOPTransformer implements ClassFileTransformer {
 
                 String methodKey = dotClassName + "#" + methodName;
 
-                if (isTarget) {
-                    System.out.println("[javaagent] instrumenting method: " + methodKey);
-                }
-
                 // Rename original method and create a wrapper
                 String originalName = methodName;
                 String renamedName = originalName + "$impl$" + (counter++);
@@ -154,10 +150,6 @@ public class AOPTransformer implements ClassFileTransformer {
 
                 StringBuilder body = new StringBuilder();
                 body.append("{\n");
-
-                if (isTarget) {
-                    body.append("  System.out.println(\"[javaagent] >> enter ").append(originalName).append("\");\n");
-                }
 
                 // Call tracing — enter
                 body.append("  com.thun.javaagent.tracing.CallTracer.getInstance().enterMethod(\"")

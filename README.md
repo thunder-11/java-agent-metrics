@@ -49,18 +49,20 @@ A production-grade Java instrumentation agent that monitors application performa
 - Automatic reload on agent restart
 - Configurable export path
 
-### 🖥️ Premium Dark-Themed Dashboard
+### 🖥️ Premium Desktop Dashboard
+- **Light/Dark Theme Toggle** — Seamlessly switch between a modern dark mode and a clean light mode with persistent preference.
 - **All Methods** tab — full table with search, color-coded rows (red=slow, orange=warning)
 - **Slow Methods** tab — filtered view of threshold-exceeding methods
-- **Call Traces** tab — JTree visualization of method call hierarchies
+- **Call Traces** tab — JTree visualization of method call hierarchies (captures full tree if any branch exceeds the slow threshold limit!)
 - **Configuration** tab — live controls for threshold, enable/disable, endpoint info
 - Real-time stat cards (methods tracked, invocations, errors, uptime)
+- **CSV Data Export** — Dump all table metrics to a clean CSV.
 
 ---
 
 ## Architecture
 
-```
+```text
 com.thun.javaagent
 ├── agent/
 │   └── AgentConfig.java          # Singleton runtime configuration
@@ -76,14 +78,14 @@ com.thun.javaagent
 │   ├── MetricsJmxExporterMBean.java
 │   └── MetricsPersistence.java   # Periodic JSON file dump
 ├── ui/
-│   └── MetricsDashboard.java     # Swing dark-themed tabbed dashboard
+│   └── MetricsDashboard.java     # Swing tabbed dashboard (Dark/Light themes)
 ├── AgentMain.java                # Agent entry point (premain/agentmain)
 ├── AOPTransformer.java           # Javassist bytecode transformer
 ├── Test.java                     # Demo application
 └── Sample.java                   # Alternative demo application
 ```
 
-**Dependencies:** Javassist only. No Spring, no frameworks.
+**Dependencies:** Javassist only. No Spring, no heavy UI frameworks.
 
 ---
 
@@ -96,16 +98,16 @@ com.thun.javaagent
 
 ## Building
 
-The project includes a locally installed Maven in the `.tools` directory.
+The project includes a locally installed Maven binary in the `.tools` directory. Run this inside the project root:
 
 **Windows:**
 ```powershell
-.\.tools\apache-maven-3.9.9\bin\mvn.cmd clean package
+.\.tools\apache-maven-3.9.9\bin\mvn.cmd clean package -DskipTests
 ```
 
 **Linux/Mac:**
 ```bash
-./.tools/apache-maven-3.9.9/bin/mvn clean package
+./.tools/apache-maven-3.9.9/bin/mvn clean package -DskipTests
 ```
 
 This produces `javaagent-1.0-SNAPSHOT-jar-with-dependencies.jar` in the `target/` directory.
@@ -114,28 +116,49 @@ This produces `javaagent-1.0-SNAPSHOT-jar-with-dependencies.jar` in the `target/
 
 ## Usage
 
-### Quick Start — Run the Demo
+### 🎨 1. Preview the Standalone UI Dashboard
+If you just want to experience the Dashboard UI, Light/Dark toggle, and mock Call Traces without hooking it into an app:
 
-```bash
-java -javaagent:target/javaagent-1.0-SNAPSHOT-jar-with-dependencies.jar=com.thun.javaagent.Test -cp target/javaagent-1.0-SNAPSHOT-jar-with-dependencies.jar com.thun.javaagent.Test
+**Windows:**
+```powershell
+java -cp "target\classes;target\dependency\*" com.thun.javaagent.ui.MetricsDashboard
 ```
 
-This will:
-1. Instrument all methods in `com.thun.javaagent.Test`
-2. Open the APM dashboard (dark-themed Swing UI)
-3. Start the HTTP server on `http://localhost:8686`
-4. Register JMX MBean
-5. Begin persisting metrics to `./agent-metrics.json`
+**Linux / Mac:**
+```bash
+java -cp "target/classes:target/dependency/*" com.thun.javaagent.ui.MetricsDashboard
+```
+
+### 🚀 2. Run the Full Demo Application with Java Agent
+Want to see the Java Agent actually profile an application in real-time? Run the built-in `Test.java` script with the agent attached:
+
+**Windows:**
+```powershell
+java -javaagent:target/javaagent-1.0-SNAPSHOT-jar-with-dependencies.jar=com.thun -cp "target\classes;target\dependency\*" com.thun.javaagent.Test
+```
+
+**Linux / Mac:**
+```bash
+java -javaagent:target/javaagent-1.0-SNAPSHOT-jar-with-dependencies.jar=com.thun -cp "target/classes:target/dependency/*" com.thun.javaagent.Test
+```
+
+**This executes the following sequence:**
+1. Injects the APM agent monitoring the `com.thun` namespace.
+2. Starts executing the simulated queries, loops, and riskey methods inside `Test.java`.
+3. Opens the **APM Dashboard** so you can watch metrics populate live.
+4. Starts the localized **HTTP server** on `http://localhost:8686`.
 
 ### Agent Argument Format
 
-**Simple (legacy):**
-```
--javaagent:agent.jar=com.yourpackage.TargetClass
+You map the `Target Namespace` via passed parameters:
+
+**Simple (Legacy):**
+```bash
+-javaagent:agent.jar=com.yourpackage
 ```
 
-**Extended (key=value pairs, semicolon-separated):**
-```
+**Extended (Key=Value, semicolon-separated):**
+```bash
 -javaagent:agent.jar="target=com.yourpackage;threshold=150;port=9090;export=./my-metrics.json"
 ```
 

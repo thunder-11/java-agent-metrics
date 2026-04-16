@@ -77,6 +77,7 @@ public final class AgentConfig {
         // Legacy format: single class name with no '=' or ';'
         if (!agentArgs.contains("=") && !agentArgs.contains(";")) {
             this.targetPackage = agentArgs.trim();
+            this.packageFilters.addIfAbsent(this.targetPackage);
             return;
         }
 
@@ -87,7 +88,10 @@ public final class AgentConfig {
             String key = kv[0].trim().toLowerCase();
             String val = kv[1].trim();
             switch (key) {
-                case "target":       this.targetPackage = val; break;
+                case "target":       
+                    this.targetPackage = val; 
+                    this.packageFilters.addIfAbsent(val);
+                    break;
                 case "threshold":    this.slowThresholdMs = Long.parseLong(val); break;
                 case "port":         this.httpPort = Integer.parseInt(val); break;
                 case "export":       this.metricsExportPath = val; break;
