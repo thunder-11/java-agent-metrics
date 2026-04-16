@@ -11,7 +11,7 @@ mvn clean package
 Find the packaged jar file in target directory and add it to the java command line options.
 For example.
 ```$xslt
-java -javaagent:/path/to/javaagent-example/target/javaagent-1.0-SNAPSHOT-jar-with-dependencies.jar=com.ali.javaagent.Test Test
+java -javaagent:/path/to/javaagent-example/target/javaagent-1.0-SNAPSHOT-jar-with-dependencies.jar=com.thun.javaagent.Test Test
 ```
 
 or run in idea and add vm options.

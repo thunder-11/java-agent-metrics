@@ -1,6 +1,6 @@
-package com.ali.javaagent;
+package com.thun.javaagent;
 
-import com.ali.javaagent.ui.MetricsDashboard;
+import com.thun.javaagent.ui.MetricsDashboard;
 
 import java.lang.instrument.Instrumentation;
 
