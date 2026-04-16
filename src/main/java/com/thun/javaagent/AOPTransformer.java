@@ -1,10 +1,13 @@
 package com.thun.javaagent;
 
+import com.thun.javaagent.agent.AgentConfig;
+
 import java.io.ByteArrayInputStream;
 import java.lang.instrument.ClassFileTransformer;
 import java.security.ProtectionDomain;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import javassist.ClassPool;
@@ -13,13 +16,15 @@ import javassist.CtMethod;
 import javassist.LoaderClassPath;
 
 /**
- * Javassist-based bytecode transformer that injects method-entry logging
- * and per-method timing / metrics collection.
+ * Javassist-based bytecode transformer that injects:
+ * <ul>
+ *   <li>Method-entry console logging (for the target class)</li>
+ *   <li>Per-method timing and metrics collection</li>
+ *   <li>Error tracking — catches and records exceptions</li>
+ *   <li>Call tree tracing — enter/exit hooks for parent→child tracking</li>
+ * </ul>
  * <p>
- * For the configured target class, the original console logging is preserved.
- * For <b>all</b> loaded application classes (excluding JDK internals and the
- * agent's own packages), timing instrumentation is injected so
- * {@link com.thun.javaagent.metrics.MetricsRegistry} receives live data.
+ * Respects {@link AgentConfig} for runtime enable/disable and filtering.
  *
  * @author Ali
  */
@@ -31,7 +36,12 @@ public class AOPTransformer implements ClassFileTransformer {
     /** Prefixes that must never be instrumented. */
     private static final Set<String> EXCLUDED_PREFIXES = new HashSet<>(Arrays.asList(
             "java/", "javax/", "sun/", "com/sun/", "jdk/",
-            "javassist/", "com/thun/javaagent/metrics/", "com/thun/javaagent/ui/"
+            "javassist/",
+            "com/thun/javaagent/metrics/",
+            "com/thun/javaagent/ui/",
+            "com/thun/javaagent/agent/",
+            "com/thun/javaagent/tracing/",
+            "com/thun/javaagent/export/"
     ));
 
     public AOPTransformer(String targetClassName) {
@@ -51,11 +61,38 @@ public class AOPTransformer implements ClassFileTransformer {
             return null; // null = no modification
         }
 
+        // Check if agent is enabled
+        if (!AgentConfig.getInstance().isEnabled()) {
+            return null;
+        }
+
         // Skip JDK / agent-internal classes
         for (String prefix : EXCLUDED_PREFIXES) {
             if (className.startsWith(prefix)) {
                 return null;
             }
+        }
+
+        // Apply class exclusions from config
+        String dotClassName = className.replace('/', '.');
+        List<String> classExclusions = AgentConfig.getInstance().getClassExclusions();
+        for (String excl : classExclusions) {
+            if (dotClassName.equals(excl) || dotClassName.endsWith("." + excl)) {
+                return null;
+            }
+        }
+
+        // Apply package filters from config (if any are set, only instrument matching packages)
+        List<String> pkgFilters = AgentConfig.getInstance().getPackageFilters();
+        if (!pkgFilters.isEmpty()) {
+            boolean matches = false;
+            for (String filter : pkgFilters) {
+                if (dotClassName.startsWith(filter)) {
+                    matches = true;
+                    break;
+                }
+            }
+            if (!matches) return null;
         }
 
         boolean isTarget = className.equals(targetClassName.replace('.', '/'));
@@ -71,7 +108,7 @@ public class AOPTransformer implements ClassFileTransformer {
                 ctClass.defrost();
             }
 
-            // Also check if interface:
+            // Skip interfaces
             if (ctClass.isInterface()) {
                 return null;
             }
@@ -79,20 +116,37 @@ public class AOPTransformer implements ClassFileTransformer {
             boolean modified = false;
             int counter = 0;
 
+            // Get method exclusions from config
+            List<String> methodExclusions = AgentConfig.getInstance().getMethodExclusions();
+
             for (CtMethod method : ctClass.getDeclaredMethods()) {
                 // Skip abstract / native methods
-                if (method.isEmpty() || javassist.Modifier.isNative(method.getModifiers()) || javassist.Modifier.isAbstract(method.getModifiers())) {
+                if (method.isEmpty()
+                        || javassist.Modifier.isNative(method.getModifiers())
+                        || javassist.Modifier.isAbstract(method.getModifiers())) {
                     continue;
                 }
 
-                String methodKey = className.replace('/', '.') + "#" + method.getName();
+                String methodName = method.getName();
+
+                // Check method exclusions
+                boolean excluded = false;
+                for (String excl : methodExclusions) {
+                    if (methodName.equals(excl)) {
+                        excluded = true;
+                        break;
+                    }
+                }
+                if (excluded) continue;
+
+                String methodKey = dotClassName + "#" + methodName;
 
                 if (isTarget) {
                     System.out.println("[javaagent] instrumenting method: " + methodKey);
                 }
 
-                // Instead of addLocalVariable, use method delegation to safely track time
-                String originalName = method.getName();
+                // Rename original method and create a wrapper
+                String originalName = methodName;
                 String renamedName = originalName + "$impl$" + (counter++);
                 method.setName(renamedName);
 
@@ -100,24 +154,44 @@ public class AOPTransformer implements ClassFileTransformer {
 
                 StringBuilder body = new StringBuilder();
                 body.append("{\n");
-                
+
                 if (isTarget) {
                     body.append("  System.out.println(\"[javaagent] >> enter ").append(originalName).append("\");\n");
                 }
-                
+
+                // Call tracing — enter
+                body.append("  com.thun.javaagent.tracing.CallTracer.getInstance().enterMethod(\"")
+                    .append(methodKey).append("\");\n");
+
                 body.append("  long $__start = System.nanoTime();\n");
                 body.append("  try {\n");
-                
+
                 if (method.getReturnType() == CtClass.voidType) {
                     body.append("    ").append(renamedName).append("($$);\n");
                 } else {
-                    body.append("    return ($r) ").append(renamedName).append("($$);\n");
+                    body.append("    ").append(method.getReturnType().getName())
+                        .append(" $__result = ($r) ").append(renamedName).append("($$);\n");
                 }
-                
-                body.append("  } finally {\n");
+
                 body.append("    long $__dur = System.nanoTime() - $__start;\n");
                 body.append("    com.thun.javaagent.metrics.MetricsRegistry.getInstance().updateMetric(\"")
                     .append(methodKey).append("\", $__dur);\n");
+                body.append("    com.thun.javaagent.tracing.CallTracer.getInstance().exitMethod(\"")
+                    .append(methodKey).append("\", $__dur);\n");
+
+                if (method.getReturnType() != CtClass.voidType) {
+                    body.append("    return $__result;\n");
+                }
+
+                body.append("  } catch (Throwable $__ex) {\n");
+                body.append("    long $__dur = System.nanoTime() - $__start;\n");
+                body.append("    com.thun.javaagent.metrics.MetricsRegistry.getInstance().updateMetric(\"")
+                    .append(methodKey).append("\", $__dur);\n");
+                body.append("    com.thun.javaagent.metrics.MetricsRegistry.getInstance().recordError(\"")
+                    .append(methodKey).append("\", $__ex.getClass().getName());\n");
+                body.append("    com.thun.javaagent.tracing.CallTracer.getInstance().exitMethod(\"")
+                    .append(methodKey).append("\", $__dur);\n");
+                body.append("    throw $__ex;\n");
                 body.append("  }\n");
                 body.append("}\n");
 
