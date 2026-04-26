@@ -1,5 +1,9 @@
 # Java Agent APM — Lightweight Application Performance Monitor
 
+[![Java Support](https://img.shields.io/badge/Java-17%2B-blue.svg)](https://java.oracle.com/)
+[![Dependencies](https://img.shields.io/badge/Dependencies-Javassist_Only-brightgreen.svg)](https://www.javassist.org/)
+[![License](https://img.shields.io/badge/License-MIT-purple.svg)]()
+
 A production-grade Java instrumentation agent that monitors application performance in real-time. Built on the Java Agent API and Javassist, it dynamically instruments methods at class-load time — **without modifying source code** — and provides a rich set of observability features comparable to tools like New Relic or Dynatrace, but in a lightweight, zero-dependency package.
 
 ---
@@ -35,6 +39,7 @@ A production-grade Java instrumentation agent that monitors application performa
 ### 📡 Metrics Export
 - **HTTP Server** (JDK built-in `HttpServer`, zero dependencies)
   - `GET /metrics` — full metrics as JSON
+  - `GET /metrics/prometheus` — **Prometheus** exposition format
   - `GET /metrics/slow` — slow methods only
   - `GET /metrics/traces` — recent call trees
   - `GET /health` — health check + summary stats
@@ -61,6 +66,72 @@ A production-grade Java instrumentation agent that monitors application performa
 ---
 
 ## Architecture
+
+```mermaid
+flowchart TD
+    %% Define Styles
+    classDef agent fill:#6e3cdc,stroke:#fff,stroke-width:2px,color:#fff;
+    classDef app fill:#2d3748,stroke:#fff,stroke-width:2px,color:#fff;
+    classDef engine fill:#e53e3e,stroke:#fff,stroke-width:2px,color:#fff;
+    classDef export fill:#3182ce,stroke:#fff,stroke-width:2px,color:#fff;
+    classDef external fill:#38a169,stroke:#fff,stroke-width:2px,color:#fff;
+
+    subgraph Target JVM
+        
+        subgraph Instrumentation [1. Instrumentation Phase]
+            AgentMain[AgentMain <br/> premain / agentmain]:::agent
+            Config[AgentConfig <br/> Runtime Settings]:::agent
+            AOP[AOPTransformer <br/> Javassist ClassFileTransformer]:::agent
+            
+            AgentMain --> |Loads Config| Config
+            AgentMain --> |Registers| AOP
+        end
+
+        subgraph Application [2. Application Runtime]
+            Orig[Original Application Classes]:::app
+            Orig -.-> |Class Loading| AOP
+            AOP --> |Injects Bytecode| Inst[Instrumented Classes]:::app
+        end
+
+        subgraph CoreEngine [3. Core Observability Engine]
+            Registry[MetricsRegistry <br/> Concurrent HashMap]:::engine
+            Method[MethodMetrics <br/> Lock-free CAS Metrics]:::engine
+            Tracer[CallTracer <br/> ThreadLocal Stack]:::engine
+            CallTree[CallNode <br/> Execution Trees]:::engine
+            
+            Inst --> |method start/end/error| Registry
+            Inst --> |method enter/exit| Tracer
+            
+            Registry --> |Updates| Method
+            Tracer --> |Builds| CallTree
+        end
+
+        subgraph Exporters [4. Exporters & Interfaces]
+            HTTP[MetricsHttpServer <br/> Built-in HTTP]:::export
+            JMX[MetricsJmxExporter <br/> JMX MBeans]:::export
+            UI[MetricsDashboard <br/> Swing UI]:::export
+            Disk[MetricsPersistence <br/> JSON File Dump]:::export
+            
+            Registry <-.-> |Reads Snapshot| HTTP
+            Registry <-.-> |Reads Snapshot| JMX
+            Registry <-.-> |Reads Snapshot| UI
+            Registry <-.-> |Saves/Restores| Disk
+            
+            Tracer <-.-> |Reads Traces| HTTP
+            Tracer <-.-> |Reads Traces| UI
+        end
+    end
+    
+    subgraph External [5. External Clients]
+        Browser[Browser / JSON Client]:::external
+        Prometheus[Prometheus Server]:::external
+        JConsole[JMX Client / VisualVM]:::external
+        
+        HTTP <--> |GET /metrics| Browser
+        HTTP <--> |GET /metrics/prometheus| Prometheus
+        JMX <--> |RMI| JConsole
+    end
+```
 
 ```text
 com.thun.javaagent
@@ -91,8 +162,8 @@ com.thun.javaagent
 
 ## Prerequisites
 
-- Java Development Kit (JDK) 8 or higher
-- Apache Maven (included locally in `.tools/`)
+- **Java Development Kit (JDK) 17** or higher
+- Apache Maven (included locally in `.tools/` or installed globally)
 
 ---
 
@@ -183,8 +254,11 @@ java -javaagent:path/to/javaagent-1.0-SNAPSHOT-jar-with-dependencies.jar="target
 ### HTTP API Examples
 
 ```bash
-# Full metrics
+# Full metrics (JSON)
 curl http://localhost:8686/metrics
+
+# Prometheus format
+curl http://localhost:8686/metrics/prometheus
 
 # Slow methods only
 curl http://localhost:8686/metrics/slow
@@ -211,6 +285,7 @@ curl -X POST http://localhost:8686/config -d '{"enabled": true, "slowThresholdMs
 | Error tracking | ✅ | ✅ | ✅ |
 | HTTP API | ✅ | ✅ | ✅ |
 | JMX integration | ✅ | ✅ | ✅ |
+| Prometheus integration| ✅ | ❌ | ❌ |
 | Zero dependencies | ✅ | ❌ | ❌ |
 | No cloud/SaaS required | ✅ | ❌ | ❌ |
 | Open source | ✅ | ❌ | ❌ |
