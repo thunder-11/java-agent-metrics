@@ -30,7 +30,8 @@ import javassist.LoaderClassPath;
  */
 public class AOPTransformer implements ClassFileTransformer {
 
-    /** Optional target package for filtering (handled by AgentConfig now). */
+    /** Optional target package for filtering (retained for constructor API; filtering uses AgentConfig). */
+    @SuppressWarnings("unused")
     private final String targetPackage;
 
     /** Prefixes that must never be instrumented. */

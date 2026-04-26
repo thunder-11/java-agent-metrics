@@ -49,6 +49,7 @@ import java.util.prefs.Preferences;
  *
  * @author Ali
  */
+@SuppressWarnings("unused")
 public class MetricsDashboard {
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1127,12 +1128,13 @@ public class MetricsDashboard {
         card.add(Box.createVerticalStrut(SP_SM));
 
         String[][] eps = {
-            {"GET", "/metrics",       "Full metrics JSON"},
-            {"GET", "/metrics/slow",  "Slow methods only"},
-            {"GET", "/metrics/traces","Recent call trees"},
-            {"GET", "/health",        "Health check"},
-            {"GET", "/config",        "Current configuration"},
-            {"POST","/config",        "Update configuration"},
+            {"GET", "/metrics",            "Full metrics JSON"},
+            {"GET", "/metrics/slow",       "Slow methods only"},
+            {"GET", "/metrics/traces",     "Recent call trees"},
+            {"GET", "/metrics/prometheus", "Prometheus exposition format"},
+            {"GET", "/health",             "Health check"},
+            {"GET", "/config",             "Current configuration"},
+            {"POST","/config",             "Update configuration"},
         };
         for (String[] ep : eps) {
             JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, SP_SM, 1));

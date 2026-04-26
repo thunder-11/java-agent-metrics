@@ -3,6 +3,7 @@ package com.thun.javaagent.export;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.thun.javaagent.agent.AgentConfig;
+import com.thun.javaagent.metrics.MethodMetrics;
 import com.thun.javaagent.metrics.MetricsRegistry;
 import com.thun.javaagent.tracing.CallNode;
 import com.thun.javaagent.tracing.CallTracer;
@@ -11,6 +12,7 @@ import java.io.*;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Embedded HTTP server for exposing agent metrics as JSON.
@@ -46,14 +48,15 @@ public final class MetricsHttpServer {
         try {
             server = HttpServer.create(new InetSocketAddress(port), 0);
 
-            server.createContext("/metrics", this::handleMetrics);
+            server.createContext("/metrics/prometheus", this::handlePrometheus);
             server.createContext("/metrics/slow", this::handleSlowMetrics);
             server.createContext("/metrics/traces", this::handleTraces);
+            server.createContext("/metrics", this::handleMetrics);
             server.createContext("/health", this::handleHealth);
             server.createContext("/config", this::handleConfig);
 
             // Use a daemon thread executor
-            server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(2, r -> {
+            server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(4, r -> {
                 Thread t = new Thread(r, "agent-http");
                 t.setDaemon(true);
                 return t;
@@ -80,7 +83,7 @@ public final class MetricsHttpServer {
             return;
         }
         String json = MetricsRegistry.getInstance().toJson();
-        sendResponse(exchange, 200, json);
+        sendResponse(exchange, 200, json, "application/json; charset=utf-8");
     }
 
     private void handleSlowMetrics(HttpExchange exchange) throws IOException {
@@ -90,7 +93,7 @@ public final class MetricsHttpServer {
         }
         long threshold = AgentConfig.getInstance().getSlowThresholdMs();
         String json = MetricsRegistry.getInstance().slowMethodsToJson(threshold);
-        sendResponse(exchange, 200, json);
+        sendResponse(exchange, 200, json, "application/json; charset=utf-8");
     }
 
     private void handleTraces(HttpExchange exchange) throws IOException {
@@ -107,7 +110,7 @@ public final class MetricsHttpServer {
             sb.append("\n");
         }
         sb.append("  ]\n}");
-        sendResponse(exchange, 200, sb.toString());
+        sendResponse(exchange, 200, sb.toString(), "application/json; charset=utf-8");
     }
 
     private void handleHealth(HttpExchange exchange) throws IOException {
@@ -118,7 +121,7 @@ public final class MetricsHttpServer {
                 cfg.isEnabled(), reg.getUptimeMillis(), reg.getMethodCount(),
                 reg.getTotalInvocations(), reg.getTotalErrors()
         );
-        sendResponse(exchange, 200, json);
+        sendResponse(exchange, 200, json, "application/json; charset=utf-8");
     }
 
     private void handleConfig(HttpExchange exchange) throws IOException {
@@ -130,7 +133,7 @@ public final class MetricsHttpServer {
                     cfg.isEnabled(), cfg.getSlowThresholdMs(), cfg.getTargetPackage(),
                     cfg.getHttpPort(), cfg.getMetricsExportPath().replace("\\", "\\\\")
             );
-            sendResponse(exchange, 200, json);
+            sendResponse(exchange, 200, json, "application/json; charset=utf-8");
 
         } else if ("POST".equals(exchange.getRequestMethod())) {
             // Read body
@@ -159,18 +162,72 @@ public final class MetricsHttpServer {
                 } catch (Exception ignored) { }
             }
 
-            sendResponse(exchange, 200, "{\"status\": \"updated\", \"config\": " + cfg + "}");
+            sendResponse(exchange, 200, "{\"status\": \"updated\", \"config\": " + cfg + "}", "application/json; charset=utf-8");
 
         } else {
             sendResponse(exchange, 405, "{\"error\": \"Method not allowed\"}");
         }
     }
 
+    // ------------------------------------------------------------ Prometheus
+
+    /**
+     * Handles GET /metrics/prometheus — returns metrics in Prometheus exposition format.
+     */
+    private void handlePrometheus(HttpExchange exchange) throws IOException {
+        if (!"GET".equals(exchange.getRequestMethod())) {
+            sendResponse(exchange, 405, "{\"error\": \"Method not allowed\"}", "application/json; charset=utf-8");
+            return;
+        }
+
+        Map<String, MethodMetrics> snapshot = MetricsRegistry.getInstance().getMetricsSnapshot();
+        StringBuilder sb = new StringBuilder();
+
+        // method_call_count
+        sb.append("# HELP method_call_count Total number of calls per method\n");
+        sb.append("# TYPE method_call_count counter\n");
+        for (Map.Entry<String, MethodMetrics> e : snapshot.entrySet()) {
+            sb.append("method_call_count{method=\"").append(escapePrometheusLabel(e.getKey()))
+              .append("\"} ").append(e.getValue().getCallCount()).append("\n");
+        }
+        sb.append("\n");
+
+        // method_avg_ms
+        sb.append("# HELP method_avg_ms Average execution time in milliseconds\n");
+        sb.append("# TYPE method_avg_ms gauge\n");
+        for (Map.Entry<String, MethodMetrics> e : snapshot.entrySet()) {
+            sb.append("method_avg_ms{method=\"").append(escapePrometheusLabel(e.getKey()))
+              .append("\"} ").append(String.format("%.3f", e.getValue().getAverageTimeMs())).append("\n");
+        }
+        sb.append("\n");
+
+        // method_error_count
+        sb.append("# HELP method_error_count Total errors per method\n");
+        sb.append("# TYPE method_error_count counter\n");
+        for (Map.Entry<String, MethodMetrics> e : snapshot.entrySet()) {
+            sb.append("method_error_count{method=\"").append(escapePrometheusLabel(e.getKey()))
+              .append("\"} ").append(e.getValue().getErrorCount()).append("\n");
+        }
+
+        sendResponse(exchange, 200, sb.toString(), "text/plain; version=0.0.4");
+    }
+
+    /**
+     * Escapes a label value for Prometheus exposition format.
+     */
+    private static String escapePrometheusLabel(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+    }
+
     // ------------------------------------------------------------ helpers
 
     private void sendResponse(HttpExchange exchange, int code, String body) throws IOException {
+        sendResponse(exchange, code, body, "application/json; charset=utf-8");
+    }
+
+    private void sendResponse(HttpExchange exchange, int code, String body, String contentType) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+        exchange.getResponseHeaders().set("Content-Type", contentType);
         exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
         exchange.sendResponseHeaders(code, bytes.length);
         try (OutputStream os = exchange.getResponseBody()) {

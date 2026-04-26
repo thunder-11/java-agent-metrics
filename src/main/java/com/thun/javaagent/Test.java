@@ -107,7 +107,7 @@ public class Test {
     public void generateReport() {
         String users = databaseQuery("users");
         String transactions = databaseQuery("transactions");
-        compute(50 + random.nextInt(100));
+        compute(users.length() + transactions.length() + random.nextInt(100));
     }
 
     // ─────────────────────────────────── Error-producing methods
